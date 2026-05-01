@@ -31,11 +31,7 @@ LOGO_FILE = find_file(".png", ["logo", "csgb", "çsgb"])
 def score_header(columns):
     joined = " ".join([normalize_text(c) for c in columns])
     score = 0
-    keywords = [
-        "uid", "kod", "birim", "kurum", "pozisyon",
-        "yetkinlik", "agirlik", "seviye", "olcum"
-    ]
-    for k in keywords:
+    for k in ["uid", "kod", "birim", "kurum", "pozisyon", "yetkinlik", "agirlik", "seviye", "olcum"]:
         if k in joined:
             score += 1
     return score
@@ -46,18 +42,11 @@ def load_best_excel(path):
 
     best_df = None
     best_score = -1
-    best_sheet = None
-    best_header = None
 
     for sheet in xls.sheet_names:
         for header_row in range(0, 10):
             try:
-                temp = pd.read_excel(
-                    path,
-                    sheet_name=sheet,
-                    header=header_row,
-                    engine="openpyxl"
-                )
+                temp = pd.read_excel(path, sheet_name=sheet, header=header_row, engine="openpyxl")
                 temp.columns = [str(c).strip() for c in temp.columns]
                 temp = temp.dropna(how="all")
 
@@ -66,34 +55,32 @@ def load_best_excel(path):
 
                 score = score_header(temp.columns)
 
-                # UID benzeri değerleri de puanla
                 sample_text = " ".join(
                     temp.astype(str).head(20).fillna("").values.flatten().tolist()
                 )
+
                 if "ÇSGB-" in sample_text or "CSGB-" in sample_text:
                     score += 5
 
                 if score > best_score:
                     best_score = score
                     best_df = temp
-                    best_sheet = sheet
-                    best_header = header_row
 
             except Exception:
                 pass
 
     if best_df is None:
-        return None, None, None
+        return None
 
     best_df.columns = [str(c).strip() for c in best_df.columns]
     best_df = best_df.dropna(how="all")
-    return best_df, best_sheet, best_header
+    return best_df
 
 if EXCEL_FILE is None:
     st.error("Excel dosyası bulunamadı. GitHub repo içine .xlsx dosyasını yükleyin.")
     st.stop()
 
-df, detected_sheet, detected_header = load_best_excel(EXCEL_FILE)
+df = load_best_excel(EXCEL_FILE)
 
 if df is None:
     st.error("Excel okunamadı.")
@@ -116,15 +103,8 @@ def find_col(possible_names):
     return None
 
 uid_col = find_col([
-    "UID",
-    "Kod",
-    "KOD",
-    "Kodu",
-    "Pozisyon Kodu",
-    "Birim Kodu",
-    "Pozisyon UID",
-    "Birim UID",
-    "ID"
+    "UID", "Kod", "KOD", "Kodu", "Pozisyon Kodu", "Birim Kodu",
+    "Pozisyon UID", "Birim UID", "ID"
 ])
 
 if uid_col is None:
@@ -135,23 +115,13 @@ if uid_col is None:
             break
 
 unit_col = find_col([
-    "Ana Birim / Kurum",
-    "Ana Birim",
-    "Kurum",
-    "Birim",
-    "Birim Adı",
-    "Bağlı Birim",
-    "Üst Birim"
+    "Ana Birim / Kurum", "Ana Birim", "Kurum", "Birim",
+    "Birim Adı", "Bağlı Birim", "Üst Birim"
 ])
 
 position_col = find_col([
-    "Pozisyon / Birim Adı",
-    "Pozisyon",
-    "Pozisyon Adı",
-    "Birim Adı",
-    "Ad",
-    "Unvan",
-    "Görev"
+    "Pozisyon / Birim Adı", "Pozisyon", "Pozisyon Adı",
+    "Birim Adı", "Ad", "Unvan", "Görev"
 ])
 
 if position_col is None:
@@ -162,8 +132,6 @@ if unit_col is None:
 
 if uid_col is None or unit_col is None or position_col is None:
     st.error("Excel yapısı tam algılanamadı.")
-    st.write("Algılanan sheet:", detected_sheet)
-    st.write("Algılanan header satırı:", detected_header)
     st.write("Excel kolonları:", list(df.columns))
     st.stop()
 
@@ -207,6 +175,7 @@ st.markdown("""
     color:white;
     text-align:center;
     padding:18px 8px;
+    font-size:19px;
     font-weight:800;
     margin-bottom:18px;
     box-shadow:0 3px 8px rgba(0,0,0,0.25);
@@ -226,6 +195,14 @@ st.markdown("""
     margin-top:6px;
     font-weight:700;
     text-align:center;
+}
+.competency-card {
+    background:#ffffff;
+    border:1px solid #ddd;
+    border-radius:8px;
+    padding:12px;
+    margin:8px 0 8px 25px;
+    box-shadow:0 2px 4px rgba(0,0,0,0.06);
 }
 </style>
 """, unsafe_allow_html=True)
@@ -274,6 +251,14 @@ org_groups = {
     ],
 }
 
+top_titles = [
+    "Bakan Yardımcısı",
+    "Bakan Yardımcısı",
+    "Bakan Yardımcısı",
+    "Bakan Yardımcısı",
+    "Bağlı Birimler"
+]
+
 aliases = {
     "Türkiye İş Kurumu Genel Müdürlüğü": ["Türkiye İş Kurumu", "İŞKUR", "ISKUR", "İşkur"],
     "Sosyal Güvenlik Kurumu": ["Sosyal Güvenlik Kurumu", "SGK"],
@@ -311,6 +296,7 @@ def find_rows_for_unit(unit_name):
             mask = mask | values.str.contains(term, na=False)
 
         words = [w for w in normalize_text(unit_name).split() if len(w) >= 4]
+
         if words:
             mask = mask | values.apply(
                 lambda x: sum(1 for w in words if w in x) >= min(2, len(words))
@@ -322,12 +308,12 @@ cols = st.columns(5)
 
 for idx, (top_uid, units) in enumerate(org_groups.items()):
     with cols[idx]:
-        st.markdown(f"<div class='org-red'>{top_uid}</div>", unsafe_allow_html=True)
+        title_text = top_titles[idx] if idx < len(top_titles) else top_uid
+        st.markdown(f"<div class='org-red'>{title_text}</div>", unsafe_allow_html=True)
 
         for unit in units:
             if st.button(unit, key=f"{top_uid}_{unit}", use_container_width=True):
                 st.session_state["selected_unit"] = unit
-                st.session_state["selected_uid"] = None
 
 if "selected_unit" in st.session_state:
     selected_unit = st.session_state["selected_unit"]
@@ -354,36 +340,26 @@ if "selected_unit" in st.session_state:
                 unsafe_allow_html=True
             )
 
-            if st.button("Yetkinlikleri Göster", key=f"show_{i}", use_container_width=True):
-                st.session_state["selected_uid"] = uid
+            toggle_key = f"toggle_{i}_{uid}"
 
-if "selected_uid" in st.session_state and st.session_state["selected_uid"]:
-    selected_uid = st.session_state["selected_uid"]
-    selected_row = df[df[uid_col].astype(str) == str(selected_uid)]
+            if toggle_key not in st.session_state:
+                st.session_state[toggle_key] = False
 
-    if not selected_row.empty:
-        row = selected_row.iloc[0]
+            if st.button("Yetkinlikleri Göster", key=f"btn_{i}_{uid}", use_container_width=True):
+                st.session_state[toggle_key] = not st.session_state[toggle_key]
 
-        st.divider()
-        st.subheader("Yetkinlikler")
+            if st.session_state[toggle_key]:
+                for name_col, code_col in competency_cols:
+                    comp_name = row.get(name_col, "") if name_col else ""
+                    comp_code = row.get(code_col, "") if code_col else ""
 
-        if not competency_cols:
-            st.warning("Yetkinlik kolonları bulunamadı.")
-        else:
-            for name_col, code_col in competency_cols:
-                comp_name = row.get(name_col, "") if name_col else ""
-                comp_code = row.get(code_col, "") if code_col else ""
-
-                if pd.notna(comp_name) and str(comp_name).strip():
-                    st.markdown(
-                        f"""
-                        <div class="detail-card">
-                            <b>{comp_name}</b>
-                            <div class="uid-card">{comp_code}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
-
-st.caption(f"Kullanılan Excel dosyası: {EXCEL_FILE.name}")
-st.caption(f"Algılanan sheet: {detected_sheet} | Başlık satırı: {detected_header + 1}")
+                    if pd.notna(comp_name) and str(comp_name).strip():
+                        st.markdown(
+                            f"""
+                            <div class="competency-card">
+                                <b>{comp_name}</b>
+                                <div class="uid-card">{comp_code}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
