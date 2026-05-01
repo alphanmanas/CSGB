@@ -2,184 +2,221 @@ import streamlit as st
 import pandas as pd
 from PIL import Image
 
-st.set_page_config(page_title="ÇSGB Organizasyon & Yetkinlik Haritası", layout="wide")
+st.set_page_config(page_title="ÇSGB Organizasyon Şeması", layout="wide")
 
 EXCEL_PATH = "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB) Kodlama & Yetkinlik Matrisi v01.xlsx"
 LOGO_PATH = "csgb_logo.png"
 
 @st.cache_data
 def load_data():
-    xls = pd.ExcelFile(EXCEL_PATH)
-    sheet_name = xls.sheet_names[0]
-    df = pd.read_excel(EXCEL_PATH, sheet_name=sheet_name)
+    df = pd.read_excel(EXCEL_PATH, engine="openpyxl")
     df.columns = [str(c).strip() for c in df.columns]
     return df
 
 df = load_data()
 
-st.markdown(
-    """
-    <style>
-    .main-title {
-        text-align:center;
-        color:#d71920;
-        font-size:30px;
-        font-weight:700;
-        margin-top:5px;
-    }
-    .uid-box {
-        background-color:#e9f7fb;
-        border:1px solid #b7dce8;
-        padding:12px;
-        border-radius:8px;
-        font-size:16px;
-        font-weight:600;
-        text-align:center;
-        margin-bottom:8px;
-    }
-    .unit-card {
-        border:1px solid #ddd;
-        border-radius:10px;
-        padding:14px;
-        margin:8px 0;
-        box-shadow:0 2px 6px rgba(0,0,0,0.08);
-        background:#fff;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-col_logo = st.columns([4, 2, 4])[1]
-
-with col_logo:
-    try:
-        logo = Image.open(LOGO_PATH)
-        st.image(logo, use_container_width=True)
-    except:
-        st.warning("Logo dosyası bulunamadı. LOGO_PATH değerini kontrol edin.")
-
-st.markdown("<div class='main-title'>T.C. Çalışma ve Sosyal Güvenlik Bakanlığı</div>", unsafe_allow_html=True)
-st.divider()
-
-required_possible_cols = {
-    "uid": ["UID", "Kod", "Pozisyon Kodu", "Birim Kodu"],
-    "unit": ["Ana Birim", "Kurum", "Birim", "Birim Adı"],
-    "position": ["Pozisyon", "Pozisyon / Birim Adı", "Birim Adı", "Pozisyon Adı"],
-}
-
-def find_col(possible_names):
-    for name in possible_names:
-        if name in df.columns:
-            return name
+def find_col(possible):
+    for c in possible:
+        if c in df.columns:
+            return c
     return None
 
-uid_col = find_col(required_possible_cols["uid"])
-unit_col = find_col(required_possible_cols["unit"])
-position_col = find_col(required_possible_cols["position"])
+uid_col = find_col(["UID", "Kod", "Pozisyon Kodu", "Birim Kodu"])
+unit_col = find_col(["Ana Birim", "Kurum", "Birim", "Birim Adı"])
+position_col = find_col(["Pozisyon / Birim Adı", "Pozisyon", "Pozisyon Adı", "Birim Adı"])
 
 if uid_col is None:
-    st.error("UID / Kod kolonu bulunamadı.")
+    st.error("Excel içinde UID/Kod kolonu bulunamadı.")
     st.stop()
 
 if unit_col is None:
-    unit_col = position_col if position_col else df.columns[0]
+    unit_col = position_col
 
 if position_col is None:
     position_col = unit_col
 
 competency_cols = []
 for i in range(1, 6):
-    name_col = None
-    code_col = None
+    name_candidates = [
+        f"Yetkinlik {i} Adı",
+        f"Yetkinlik {i}",
+    ]
+    code_candidates = [
+        f"Yetkinlik {i} Kodu",
+    ]
 
-    for c in df.columns:
-        c_clean = str(c).strip().lower()
-        if f"yetkinlik {i}" in c_clean and "adı" in c_clean:
-            name_col = c
-        if f"yetkinlik {i}" in c_clean and "kodu" in c_clean:
-            code_col = c
+    name_col = find_col(name_candidates)
+    code_col = find_col(code_candidates)
 
     if name_col or code_col:
         competency_cols.append((name_col, code_col))
 
-if not competency_cols:
-    for i in range(1, 6):
-        possible_name = f"Yetkinlik {i}"
-        possible_code = f"Yetkinlik {i} Kodu"
-        if possible_name in df.columns or possible_code in df.columns:
-            competency_cols.append((possible_name, possible_code))
+st.markdown("""
+<style>
+.logo-area {
+    text-align:center;
+    margin-top:10px;
+}
+.title-box {
+    border:2px solid #ddd;
+    box-shadow:0 2px 8px rgba(0,0,0,0.15);
+    text-align:center;
+    padding:12px;
+    margin:10px 0 25px 0;
+    background:white;
+}
+.title-red {
+    color:#e30613;
+    font-size:26px;
+    font-weight:800;
+}
+.org-red {
+    background:#e30613;
+    color:white;
+    text-align:center;
+    padding:18px 8px;
+    font-weight:800;
+    border-radius:2px;
+    margin-bottom:18px;
+    box-shadow:0 3px 8px rgba(0,0,0,0.25);
+}
+.org-card {
+    background:#f8f8f8;
+    border:2px solid #ddd;
+    box-shadow:0 3px 8px rgba(0,0,0,0.15);
+    padding:15px 8px;
+    min-height:65px;
+    text-align:center;
+    margin-bottom:14px;
+    font-size:14px;
+}
+.uid-card {
+    background:#d8f2fb;
+    border:1px solid #8fc8dc;
+    padding:10px;
+    margin-top:6px;
+    font-weight:700;
+    text-align:center;
+}
+.detail-card {
+    background:white;
+    border:1px solid #ddd;
+    border-radius:8px;
+    padding:14px;
+    margin-bottom:10px;
+    box-shadow:0 2px 5px rgba(0,0,0,0.08);
+}
+</style>
+""", unsafe_allow_html=True)
 
-st.subheader("Organizasyon Şeması")
+logo_col = st.columns([4, 2, 4])[1]
+with logo_col:
+    try:
+        st.image(Image.open(LOGO_PATH), use_container_width=True)
+    except:
+        st.warning("Logo bulunamadı: csgb_logo.png")
 
-units = (
-    df[[unit_col]]
-    .dropna()
-    .drop_duplicates()
-    .sort_values(by=unit_col)
-    [unit_col]
-    .tolist()
-)
+st.markdown("""
+<div class="title-box">
+    <div class="title-red">T.C. Çalışma ve Sosyal Güvenlik Bakanlığı</div>
+    <div style="font-size:22px;">Organizasyon ve Yetkinlik Haritası</div>
+</div>
+""", unsafe_allow_html=True)
+
+org_groups = {
+    "ÇSGB-BAK": [
+        "Basın ve Halkla İlişkiler Müşavirliği",
+        "Destek Hizmetleri Dairesi Başkanlığı",
+        "İç Denetim Birimi Başkanlığı",
+        "Özel Kalem Müdürlüğü",
+        "Personel Dairesi Başkanlığı",
+        "Rehberlik ve Teftiş Başkanlığı",
+    ],
+    "ÇSGB-BY1": [
+        "Dış İlişkiler ve Avrupa Birliği Genel Müdürlüğü",
+        "Sosyal Güvenlik Kurumu",
+        "Strateji Geliştirme Başkanlığı",
+    ],
+    "ÇSGB-BY2": [
+        "Bilgi Teknolojileri Genel Müdürlüğü",
+        "Hukuk Hizmetleri Genel Müdürlüğü",
+        "Çalışma ve Sosyal Güvenlik Eğitim ve Araştırma Merkezi",
+        "Ereğli Kömür Havzası Amele Birliği Biriktirme ve Yardımlaşma Sandığı",
+    ],
+    "ÇSGB-BY3": [
+        "Çalışma Genel Müdürlüğü",
+        "Uluslararası İşgücü Genel Müdürlüğü",
+        "Mesleki Yeterlilik Kurumu",
+    ],
+    "ÇSGB-BY4": [
+        "İş Sağlığı ve Güvenliği Genel Müdürlüğü",
+        "Türkiye İş Kurumu Genel Müdürlüğü",
+    ],
+}
 
 cols = st.columns(5)
 
-selected_unit = None
+for idx, (top_uid, units) in enumerate(org_groups.items()):
+    with cols[idx]:
+        st.markdown(f"<div class='org-red'>{top_uid}</div>", unsafe_allow_html=True)
 
-for idx, unit in enumerate(units):
-    with cols[idx % 5]:
-        if st.button(str(unit), use_container_width=True, key=f"unit_{idx}"):
-            selected_unit = unit
-            st.session_state["selected_unit"] = unit
-            st.session_state["selected_position_uid"] = None
+        for unit in units:
+            if st.button(unit, key=f"unit_{top_uid}_{unit}", use_container_width=True):
+                st.session_state["selected_unit"] = unit
+                st.session_state["selected_uid"] = None
 
 if "selected_unit" in st.session_state:
     selected_unit = st.session_state["selected_unit"]
 
-st.divider()
-
-if selected_unit:
-    st.subheader(f"Seçilen Ana Birim / Kurum: {selected_unit}")
-
-    unit_df = df[df[unit_col] == selected_unit].copy()
-
-    st.markdown("### Pozisyon / Birim Listesi")
-
-    for idx, row in unit_df.iterrows():
-        position_name = row.get(position_col, "")
-        uid = row.get(uid_col, "")
-
-        with st.container():
-            st.markdown(
-                f"""
-                <div class="unit-card">
-                    <div><b>{position_name}</b></div>
-                    <div class="uid-box">{uid}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-            if st.button("Yetkinlikleri Göster", key=f"pos_{idx}", use_container_width=True):
-                st.session_state["selected_position_uid"] = uid
-
-if "selected_position_uid" in st.session_state and st.session_state["selected_position_uid"]:
-    selected_uid = st.session_state["selected_position_uid"]
-    selected_row = df[df[uid_col] == selected_uid].iloc[0]
-
     st.divider()
-    st.subheader("Yetkinlikler")
+    st.subheader(selected_unit)
 
-    for name_col, code_col in competency_cols:
-        comp_name = selected_row.get(name_col, "") if name_col in df.columns else ""
-        comp_code = selected_row.get(code_col, "") if code_col in df.columns else ""
+    unit_df = df[df[unit_col].astype(str).str.contains(selected_unit, case=False, na=False)]
 
-        if pd.notna(comp_name) or pd.notna(comp_code):
+    if unit_df.empty:
+        unit_df = df[df[position_col].astype(str).str.contains(selected_unit, case=False, na=False)]
+
+    if unit_df.empty:
+        st.warning("Bu birim Excel içinde bulunamadı. Excel’deki birim adı ile şemadaki ad birebir farklı olabilir.")
+    else:
+        for i, row in unit_df.iterrows():
+            position_name = row.get(position_col, "")
+            uid = row.get(uid_col, "")
+
             st.markdown(
                 f"""
-                <div class="unit-card">
-                    <div><b>{comp_name}</b></div>
-                    <div class="uid-box">{comp_code}</div>
+                <div class="detail-card">
+                    <b>{position_name}</b>
+                    <div class="uid-card">{uid}</div>
                 </div>
                 """,
                 unsafe_allow_html=True
             )
+
+            if st.button("Yetkinlikleri Göster", key=f"show_{i}", use_container_width=True):
+                st.session_state["selected_uid"] = uid
+
+if "selected_uid" in st.session_state and st.session_state["selected_uid"]:
+    selected_uid = st.session_state["selected_uid"]
+    selected_row = df[df[uid_col] == selected_uid]
+
+    if not selected_row.empty:
+        row = selected_row.iloc[0]
+
+        st.divider()
+        st.subheader("Yetkinlikler")
+
+        for name_col, code_col in competency_cols:
+            comp_name = row.get(name_col, "") if name_col else ""
+            comp_code = row.get(code_col, "") if code_col else ""
+
+            if pd.notna(comp_name) and str(comp_name).strip():
+                st.markdown(
+                    f"""
+                    <div class="detail-card">
+                        <b>{comp_name}</b>
+                        <div class="uid-card">{comp_code}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
