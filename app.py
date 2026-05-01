@@ -2,111 +2,173 @@ import streamlit as st
 import pandas as pd
 from PIL import Image
 from pathlib import Path
-from difflib import SequenceMatcher
+import re
 
 st.set_page_config(page_title="ÇSGB Organizasyon Şeması", layout="wide")
 
 BASE_DIR = Path(__file__).parent
+
+def normalize_text(x):
+    x = str(x).strip().lower()
+    tr_map = str.maketrans("çğıöşüİ", "cgiosui")
+    x = x.translate(tr_map)
+    x = re.sub(r"\s+", " ", x)
+    return x
 
 def find_file(extension, keywords):
     files = list(BASE_DIR.glob(f"*{extension}"))
     if not files:
         return None
     for f in files:
-        name = f.name.lower()
-        if any(k.lower() in name for k in keywords):
+        name = normalize_text(f.name)
+        if any(normalize_text(k) in name for k in keywords):
             return f
     return files[0]
 
-EXCEL_FILE = find_file(".xlsx", ["çalışma", "csgb", "çsgb"])
+EXCEL_FILE = find_file(".xlsx", ["çalışma", "csgb", "çsgb", "yetkinlik"])
 LOGO_FILE = find_file(".png", ["logo", "csgb", "çsgb"])
 
-def clean_text(x):
-    return (
-        str(x)
-        .lower()
-        .strip()
-        .replace("ı", "i")
-        .replace("İ", "i")
-        .replace("ğ", "g")
-        .replace("ü", "u")
-        .replace("ş", "s")
-        .replace("ö", "o")
-        .replace("ç", "c")
-    )
+def score_header(columns):
+    joined = " ".join([normalize_text(c) for c in columns])
+    score = 0
+    keywords = [
+        "uid", "kod", "birim", "kurum", "pozisyon",
+        "yetkinlik", "agirlik", "seviye", "olcum"
+    ]
+    for k in keywords:
+        if k in joined:
+            score += 1
+    return score
 
 @st.cache_data
-def load_excel(path):
+def load_best_excel(path):
     xls = pd.ExcelFile(path, engine="openpyxl")
 
     best_df = None
     best_score = -1
+    best_sheet = None
+    best_header = None
 
     for sheet in xls.sheet_names:
-        temp = pd.read_excel(path, sheet_name=sheet, engine="openpyxl")
-        temp.columns = [str(c).strip() for c in temp.columns]
+        for header_row in range(0, 10):
+            try:
+                temp = pd.read_excel(
+                    path,
+                    sheet_name=sheet,
+                    header=header_row,
+                    engine="openpyxl"
+                )
+                temp.columns = [str(c).strip() for c in temp.columns]
+                temp = temp.dropna(how="all")
 
-        joined = " ".join(temp.columns).lower()
-        score = 0
-        for key in ["uid", "kod", "birim", "pozisyon", "yetkinlik"]:
-            if key in joined:
-                score += 1
+                if temp.empty:
+                    continue
 
-        if score > best_score:
-            best_score = score
-            best_df = temp
+                score = score_header(temp.columns)
+
+                # UID benzeri değerleri de puanla
+                sample_text = " ".join(
+                    temp.astype(str).head(20).fillna("").values.flatten().tolist()
+                )
+                if "ÇSGB-" in sample_text or "CSGB-" in sample_text:
+                    score += 5
+
+                if score > best_score:
+                    best_score = score
+                    best_df = temp
+                    best_sheet = sheet
+                    best_header = header_row
+
+            except Exception:
+                pass
+
+    if best_df is None:
+        return None, None, None
 
     best_df.columns = [str(c).strip() for c in best_df.columns]
-    return best_df
+    best_df = best_df.dropna(how="all")
+    return best_df, best_sheet, best_header
 
 if EXCEL_FILE is None:
-    st.error("Excel dosyası bulunamadı. Repo içine .xlsx dosyasını yükleyin.")
+    st.error("Excel dosyası bulunamadı. GitHub repo içine .xlsx dosyasını yükleyin.")
     st.stop()
 
-df = load_excel(EXCEL_FILE)
+df, detected_sheet, detected_header = load_best_excel(EXCEL_FILE)
+
+if df is None:
+    st.error("Excel okunamadı.")
+    st.stop()
 
 def find_col(possible_names):
+    possible = [normalize_text(x) for x in possible_names]
+
     for col in df.columns:
-        col_clean = clean_text(col)
-        for name in possible_names:
-            if clean_text(name) == col_clean or clean_text(name) in col_clean:
+        col_norm = normalize_text(col)
+        if col_norm in possible:
+            return col
+
+    for col in df.columns:
+        col_norm = normalize_text(col)
+        for p in possible:
+            if p in col_norm or col_norm in p:
                 return col
+
     return None
 
 uid_col = find_col([
-    "UID", "Kod", "KOD", "Kodu", "Pozisyon Kodu", "Birim Kodu",
-    "Pozisyon UID", "Birim UID", "ID"
-])
-
-unit_col = find_col([
-    "Ana Birim", "Kurum", "Birim", "Birim Adı", "Ana Birim / Kurum",
-    "Bağlı Birim", "Üst Birim"
-])
-
-position_col = find_col([
-    "Pozisyon / Birim Adı", "Pozisyon", "Pozisyon Adı",
-    "Birim Adı", "Ad", "Unvan", "Görev"
+    "UID",
+    "Kod",
+    "KOD",
+    "Kodu",
+    "Pozisyon Kodu",
+    "Birim Kodu",
+    "Pozisyon UID",
+    "Birim UID",
+    "ID"
 ])
 
 if uid_col is None:
     for col in df.columns:
-        sample = df[col].dropna().astype(str).head(50).tolist()
-        if any("ÇSGB-" in v or "CSGB-" in v for v in sample):
+        sample_values = df[col].dropna().astype(str).head(100).tolist()
+        if any("ÇSGB-" in v or "CSGB-" in v for v in sample_values):
             uid_col = col
             break
 
+unit_col = find_col([
+    "Ana Birim / Kurum",
+    "Ana Birim",
+    "Kurum",
+    "Birim",
+    "Birim Adı",
+    "Bağlı Birim",
+    "Üst Birim"
+])
+
+position_col = find_col([
+    "Pozisyon / Birim Adı",
+    "Pozisyon",
+    "Pozisyon Adı",
+    "Birim Adı",
+    "Ad",
+    "Unvan",
+    "Görev"
+])
+
 if position_col is None:
-    position_col = unit_col if unit_col else df.columns[0]
+    position_col = unit_col
 
 if unit_col is None:
     unit_col = position_col
 
-if uid_col is None:
-    st.error("UID/Kod kolonu bulunamadı.")
+if uid_col is None or unit_col is None or position_col is None:
+    st.error("Excel yapısı tam algılanamadı.")
+    st.write("Algılanan sheet:", detected_sheet)
+    st.write("Algılanan header satırı:", detected_header)
     st.write("Excel kolonları:", list(df.columns))
     st.stop()
 
 competency_cols = []
+
 for i in range(1, 6):
     name_col = find_col([
         f"Yetkinlik {i} Adı",
@@ -114,10 +176,11 @@ for i in range(1, 6):
         f"Yetkinlik{i} Adı",
         f"Yetkinlik{i}"
     ])
+
     code_col = find_col([
         f"Yetkinlik {i} Kodu",
-        f"Yetkinlik{i} Kodu",
         f"Yetkinlik {i} Kod",
+        f"Yetkinlik{i} Kodu",
         f"Yetkinlik{i} Kod"
     ])
 
@@ -168,6 +231,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 logo_col = st.columns([4, 2, 4])[1]
+
 with logo_col:
     if LOGO_FILE:
         st.image(Image.open(LOGO_FILE), use_container_width=True)
@@ -210,8 +274,8 @@ org_groups = {
     ],
 }
 
-unit_aliases = {
-    "Türkiye İş Kurumu Genel Müdürlüğü": ["Türkiye İş Kurumu", "İŞKUR", "Iskur"],
+aliases = {
+    "Türkiye İş Kurumu Genel Müdürlüğü": ["Türkiye İş Kurumu", "İŞKUR", "ISKUR", "İşkur"],
     "Sosyal Güvenlik Kurumu": ["Sosyal Güvenlik Kurumu", "SGK"],
     "İş Sağlığı ve Güvenliği Genel Müdürlüğü": ["İş Sağlığı", "İSGGM", "ISGGM"],
     "Bilgi Teknolojileri Genel Müdürlüğü": ["Bilgi Teknolojileri"],
@@ -231,42 +295,28 @@ unit_aliases = {
     "Ereğli Kömür Havzası Amele Birliği Biriktirme ve Yardımlaşma Sandığı": ["Ereğli", "Amele Birliği"],
 }
 
-def match_unit_rows(selected_unit):
-    search_terms = [selected_unit] + unit_aliases.get(selected_unit, [])
-    search_terms_clean = [clean_text(x) for x in search_terms]
+def find_rows_for_unit(unit_name):
+    terms = [unit_name] + aliases.get(unit_name, [])
+    terms_norm = [normalize_text(t) for t in terms]
 
     mask = pd.Series(False, index=df.index)
 
-    for col in [unit_col, position_col]:
-        if col and col in df.columns:
-            col_values = df[col].astype(str).apply(clean_text)
+    searchable_cols = [unit_col, position_col, uid_col]
+    searchable_cols = [c for c in searchable_cols if c and c in df.columns]
 
-            for term in search_terms_clean:
-                mask = mask | col_values.str.contains(term, na=False)
+    for col in searchable_cols:
+        values = df[col].astype(str).apply(normalize_text)
 
-            # Kelime bazlı esnek eşleşme
-            selected_words = [w for w in clean_text(selected_unit).split() if len(w) > 3]
-            if selected_words:
-                mask = mask | col_values.apply(
-                    lambda x: sum(1 for w in selected_words if w in x) >= min(2, len(selected_words))
-                )
+        for term in terms_norm:
+            mask = mask | values.str.contains(term, na=False)
 
-    result = df[mask].copy()
+        words = [w for w in normalize_text(unit_name).split() if len(w) >= 4]
+        if words:
+            mask = mask | values.apply(
+                lambda x: sum(1 for w in words if w in x) >= min(2, len(words))
+            )
 
-    # Hâlâ bulunamazsa fuzzy eşleşme
-    if result.empty:
-        candidates = []
-        for idx, row in df.iterrows():
-            text = clean_text(str(row.get(unit_col, "")) + " " + str(row.get(position_col, "")))
-            score = SequenceMatcher(None, clean_text(selected_unit), text).ratio()
-            if score > 0.35:
-                candidates.append((idx, score))
-
-        if candidates:
-            candidates = sorted(candidates, key=lambda x: x[1], reverse=True)[:20]
-            result = df.loc[[idx for idx, score in candidates]].copy()
-
-    return result
+    return df[mask].copy()
 
 cols = st.columns(5)
 
@@ -285,13 +335,11 @@ if "selected_unit" in st.session_state:
     st.divider()
     st.subheader(selected_unit)
 
-    unit_df = match_unit_rows(selected_unit)
+    unit_df = find_rows_for_unit(selected_unit)
 
     if unit_df.empty:
         st.warning("Bu birim Excel içinde bulunamadı.")
     else:
-        st.write(f"Bulunan kayıt sayısı: {len(unit_df)}")
-
         for i, row in unit_df.iterrows():
             position_name = row.get(position_col, "")
             uid = row.get(uid_col, "")
@@ -311,7 +359,6 @@ if "selected_unit" in st.session_state:
 
 if "selected_uid" in st.session_state and st.session_state["selected_uid"]:
     selected_uid = st.session_state["selected_uid"]
-
     selected_row = df[df[uid_col].astype(str) == str(selected_uid)]
 
     if not selected_row.empty:
@@ -322,7 +369,6 @@ if "selected_uid" in st.session_state and st.session_state["selected_uid"]:
 
         if not competency_cols:
             st.warning("Yetkinlik kolonları bulunamadı.")
-            st.write("Excel kolonları:", list(df.columns))
         else:
             for name_col, code_col in competency_cols:
                 comp_name = row.get(name_col, "") if name_col else ""
@@ -340,3 +386,4 @@ if "selected_uid" in st.session_state and st.session_state["selected_uid"]:
                     )
 
 st.caption(f"Kullanılan Excel dosyası: {EXCEL_FILE.name}")
+st.caption(f"Algılanan sheet: {detected_sheet} | Başlık satırı: {detected_header + 1}")
