@@ -10,11 +10,17 @@ st.set_page_config(
     layout="wide"
 )
 
+# =========================================================
+# SABİT AYARLAR
+# =========================================================
+
 BASE_DIR = Path(__file__).parent
 DEFAULT_EXCEL_PATH = BASE_DIR / "data" / "csgb_yetkinlik.xlsx"
 
-# Aynı yetkinlik seti bu sayı veya daha fazla UID'de tekrar ederse sadece uyarı verir.
-# Yetkinlikleri gizlemez.
+TARGET_ORG_SHEET = "ÇSGB Kodlama"
+TARGET_COMPETENCY_SHEET = "Yetkinlik Matrisi"
+TARGET_MASTER_SHEET = "Master Yetkinlik Listesi"
+
 REPEATED_SET_WARNING_LIMIT = 6
 
 
@@ -48,7 +54,7 @@ def is_position_uid(value):
 
 def is_competency_code(value):
     text = clean_value(value).upper()
-    return bool(re.match(r"^[A-ZÇĞİÖŞÜ]{2,5}-[A-ZÇĞİÖŞÜ0-9]{2,8}-\d{2}$", text))
+    return bool(re.match(r"^[A-ZÇĞİÖŞÜ]{2,6}-[A-ZÇĞİÖŞÜ0-9]{2,10}-\d{2}$", text))
 
 
 def find_col(df, candidates, exact=False, forbidden=None):
@@ -93,20 +99,6 @@ def find_excel_file():
     if not files:
         return None
 
-    priority_words = [
-        "csgb",
-        "çsgb",
-        "kodlama",
-        "yetkinlik",
-        "matrisi",
-        "çalışma",
-    ]
-
-    for file in files:
-        name = normalize_text(file.name)
-        if any(normalize_text(w) in name for w in priority_words):
-            return file
-
     return files[0]
 
 
@@ -117,7 +109,7 @@ def find_excel_file():
 EXCEL_FILE = find_excel_file()
 
 if EXCEL_FILE is None:
-    st.error("Excel dosyası bulunamadı. Dosyayı data/csgb_yetkinlik.xlsx olarak koyun.")
+    st.error("Excel dosyası bulunamadı. Dosyayı data/csgb_yetkinlik.xlsx olarak koy.")
     st.stop()
 
 
@@ -159,20 +151,15 @@ def read_all_sheets(path):
                 score = 0
 
                 if "uid" in cols:
-                    score += 20
+                    score += 30
                 if "ana birim" in cols:
                     score += 20
                 if "pozisyon" in cols:
                     score += 20
                 if "yetkinlik" in cols:
-                    score += 15
-                if (
-                    "ÇSGB-" in sample
-                    or "CSGB-" in sample
-                    or "ÇSGK-" in sample
-                    or "CSGK-" in sample
-                ):
                     score += 20
+                if "ÇSGB-" in sample or "CSGB-" in sample or "ÇSGK-" in sample or "CSGK-" in sample:
+                    score += 30
 
                 if score > best_score:
                     best_score = score
@@ -198,86 +185,19 @@ if not sheets:
     st.stop()
 
 
-# =========================================================
-# ORGANİZASYON SAYFASI
-# =========================================================
-
-def looks_like_org_sheet(df):
-    cols = " ".join(normalize_text(c) for c in df.columns)
-
-    has_uid = "uid" in cols
-    has_unit = "ana birim" in cols or "kurum" in cols
-    has_position = "pozisyon" in cols or "birim adi" in cols
-
-    has_real_uid = False
-
-    for col in df.columns:
-        sample = df[col].dropna().astype(str).head(300).tolist()
-        if any(is_position_uid(v) for v in sample):
-            has_real_uid = True
-            break
-
-    return has_uid and has_unit and has_position and has_real_uid
-
-
-def select_org_sheet(sheets_dict):
-    preferred_names = [
-        "ÇSGB Kodlama",
-        "CSGB Kodlama",
-        "Kodlama",
-        "ÇSGB_Kodlama",
-        "CSGB_Kodlama",
-    ]
-
-    for preferred in preferred_names:
-        for sheet_name, payload in sheets_dict.items():
-            if normalize_text(sheet_name) == normalize_text(preferred):
-                df = payload["df"]
-                if looks_like_org_sheet(df):
-                    return sheet_name, df, payload["header"]
-
-    best_sheet = None
-    best_df = None
-    best_header = None
-    best_score = -999
-
+def get_sheet_exact(sheets_dict, target_name):
     for sheet_name, payload in sheets_dict.items():
-        df = payload["df"]
-        sheet_norm = normalize_text(sheet_name)
-        cols = " ".join(normalize_text(c) for c in df.columns)
+        if normalize_text(sheet_name) == normalize_text(target_name):
+            return sheet_name, payload["df"], payload["header"]
 
-        if "master" in sheet_norm:
-            continue
-
-        score = 0
-
-        if looks_like_org_sheet(df):
-            score += 100
-        if "kodlama" in sheet_norm:
-            score += 40
-        if "uid" in cols:
-            score += 20
-        if "ana birim" in cols:
-            score += 20
-        if "pozisyon" in cols:
-            score += 20
-        if "yetkinlik kodu" in cols and "ana birim" not in cols:
-            score -= 100
-
-        if score > best_score:
-            best_score = score
-            best_sheet = sheet_name
-            best_df = df
-            best_header = payload["header"]
-
-    return best_sheet, best_df, best_header
-
-
-org_sheet, org_raw_df, org_header = select_org_sheet(sheets)
-
-if org_raw_df is None or org_raw_df.empty:
-    st.error("ÇSGB Kodlama / organizasyon sayfası bulunamadı.")
+    st.error(f"Excel içinde '{target_name}' sayfası bulunamadı.")
+    st.write("Bulunan sayfalar:", list(sheets_dict.keys()))
     st.stop()
+
+
+org_sheet, org_raw_df, org_header = get_sheet_exact(sheets, TARGET_ORG_SHEET)
+comp_sheet, comp_raw_df, comp_header = get_sheet_exact(sheets, TARGET_COMPETENCY_SHEET)
+master_sheet, master_raw_df, master_header = get_sheet_exact(sheets, TARGET_MASTER_SHEET)
 
 
 # =========================================================
@@ -327,7 +247,6 @@ main_code_col = find_col(
 
 if uid_col is None or unit_col is None or position_col is None:
     st.error("ÇSGB Kodlama sayfasında UID, Ana Birim / Kurum veya Pozisyon / Birim Adı kolonu bulunamadı.")
-    st.write("Okunan organizasyon sheet:", org_sheet)
     st.write("Kolonlar:", list(org_raw_df.columns))
     st.stop()
 
@@ -366,55 +285,43 @@ org_df = org_df.drop_duplicates(subset=[uid_col], keep="first").reset_index(drop
 
 # =========================================================
 # MASTER YETKİNLİK LİSTESİ
-# SADECE KOD -> AD TAMAMLAMA
+# SADECE KOD -> AD İÇİN
 # =========================================================
 
-def build_master_lookup(sheets_dict):
+def build_master_lookup(master_df):
     lookup = {}
 
-    for sheet_name, payload in sheets_dict.items():
-        df = payload["df"]
-        sheet_norm = normalize_text(sheet_name)
-        cols_norm = " ".join(normalize_text(c) for c in df.columns)
+    code_col = find_col(
+        master_df,
+        ["Yetkinlik Kodu", "Kod", "Kodu"],
+        forbidden=["uid", "pozisyon", "birim"],
+    )
 
-        is_master = "master" in sheet_norm
-        has_master_cols = "yetkinlik kodu" in cols_norm and (
-            "yetkinlik adi" in cols_norm or "yetkinlik adı" in cols_norm
-        )
+    name_col = find_col(
+        master_df,
+        ["Yetkinlik Adı", "Yetkinlik Adi", "Yetkinlik"],
+        forbidden=["kodu", "kod", "uid"],
+    )
 
-        if not is_master and not has_master_cols:
-            continue
+    if code_col is None or name_col is None:
+        st.warning("Master Yetkinlik Listesi içinde Yetkinlik Kodu / Yetkinlik Adı kolonları bulunamadı.")
+        return lookup
 
-        code_col = find_col(
-            df,
-            ["Yetkinlik Kodu", "Kod", "Kodu"],
-            forbidden=["uid", "pozisyon", "birim"],
-        )
+    for _, row in master_df.iterrows():
+        code = clean_value(row.get(code_col, "")).upper()
+        name = clean_value(row.get(name_col, ""))
 
-        name_col = find_col(
-            df,
-            ["Yetkinlik Adı", "Yetkinlik Adi", "Yetkinlik"],
-            forbidden=["kodu", "kod", "uid"],
-        )
-
-        if code_col is None or name_col is None:
-            continue
-
-        for _, row in df.iterrows():
-            code = clean_value(row.get(code_col, "")).upper()
-            name = clean_value(row.get(name_col, ""))
-
-            if is_competency_code(code) and name:
-                lookup[code] = name
+        if is_competency_code(code) and name:
+            lookup[code] = name
 
     return lookup
 
 
-master_lookup = build_master_lookup(sheets)
+master_lookup = build_master_lookup(master_raw_df)
 
 
 # =========================================================
-# YETKİNLİK MATRİSİ
+# YETKİNLİK MATRİSİ OKUMA
 # =========================================================
 
 def find_uid_col_for_comp_sheet(df):
@@ -493,7 +400,7 @@ def split_competency_value(value):
         return "", ""
 
     m = re.match(
-        r"^([A-ZÇĞİÖŞÜ]{2,5}-[A-ZÇĞİÖŞÜ0-9]{2,8}-\d{2})\s*[-–—]\s*(.+)$",
+        r"^([A-ZÇĞİÖŞÜ]{2,6}-[A-ZÇĞİÖŞÜ0-9]{2,10}-\d{2})\s*[-–—]\s*(.+)$",
         text,
         flags=re.IGNORECASE,
     )
@@ -502,7 +409,7 @@ def split_competency_value(value):
         return m.group(2).strip(), m.group(1).strip().upper()
 
     m2 = re.match(
-        r"^([A-ZÇĞİÖŞÜ]{2,5}-[A-ZÇĞİÖŞÜ0-9]{2,8}-\d{2})$",
+        r"^([A-ZÇĞİÖŞÜ]{2,6}-[A-ZÇĞİÖŞÜ0-9]{2,10}-\d{2})$",
         text,
         flags=re.IGNORECASE,
     )
@@ -513,109 +420,32 @@ def split_competency_value(value):
     return text, ""
 
 
-def is_valid_competency_matrix(sheet_name, df):
-    sheet_norm = normalize_text(sheet_name)
-    cols = " ".join(normalize_text(c) for c in df.columns)
+comp_uid_col = find_uid_col_for_comp_sheet(comp_raw_df)
+comp_cols = find_competency_columns(comp_raw_df)
 
-    if "master" in sheet_norm:
-        return False
+if comp_uid_col is None:
+    st.error("Yetkinlik Matrisi sayfasında UID kolonu bulunamadı.")
+    st.write("Kolonlar:", list(comp_raw_df.columns))
+    st.stop()
 
-    if "kodlama" in sheet_norm:
-        return False
-
-    if "yetkinlik" not in cols:
-        return False
-
-    uid_candidate = find_uid_col_for_comp_sheet(df)
-
-    if uid_candidate is None:
-        return False
-
-    comp_cols = find_competency_columns(df)
-
-    if not comp_cols:
-        return False
-
-    sample = df[uid_candidate].dropna().astype(str).head(300).tolist()
-
-    if not any(is_position_uid(v) for v in sample):
-        return False
-
-    return True
-
-
-def choose_primary_competency_sheet(sheets_dict):
-    preferred_order = [
-        "Yetkinlik Matrisi v03",
-        "Yetkinlik Matrisi",
-        "Yetkinlik Matrisi v02",
-        "ÇSGB Yetkinlik Matrisi",
-        "CSGB Yetkinlik Matrisi",
-    ]
-
-    for preferred in preferred_order:
-        for sheet_name, payload in sheets_dict.items():
-            if normalize_text(sheet_name) == normalize_text(preferred):
-                df = payload["df"]
-                if is_valid_competency_matrix(sheet_name, df):
-                    return sheet_name, df, payload["header"]
-
-    candidates = []
-
-    for sheet_name, payload in sheets_dict.items():
-        df = payload["df"]
-
-        if not is_valid_competency_matrix(sheet_name, df):
-            continue
-
-        cols = " ".join(normalize_text(c) for c in df.columns)
-        sheet_norm = normalize_text(sheet_name)
-
-        score = 0
-
-        if "yetkinlik matrisi" in sheet_norm:
-            score += 50
-        if "yetkinlik 1 kodu" in cols:
-            score += 30
-        if "yetkinlik 1 adi" in cols or "yetkinlik 1 adı" in cols:
-            score += 30
-        if "agirlik" in cols or "ağırlık" in cols:
-            score += 10
-
-        candidates.append((score, sheet_name, df, payload["header"]))
-
-    if not candidates:
-        return None, None, None
-
-    candidates.sort(reverse=True, key=lambda x: x[0])
-    return candidates[0][1], candidates[0][2], candidates[0][3]
-
-
-comp_sheet, comp_raw_df, comp_header = choose_primary_competency_sheet(sheets)
-
-if comp_raw_df is None or comp_raw_df.empty:
-    comp_raw_df = pd.DataFrame()
+if not comp_cols:
+    st.error("Yetkinlik Matrisi sayfasında Yetkinlik 1-10 kolonları bulunamadı.")
+    st.write("Kolonlar:", list(comp_raw_df.columns))
+    st.stop()
 
 
 def build_competency_map(df):
     comp_map = {}
     raw_rows = []
 
-    if df is None or df.empty:
-        return comp_map, pd.DataFrame(), None, []
-
-    uid_candidate = find_uid_col_for_comp_sheet(df)
-    comp_cols = find_competency_columns(df)
-
-    if uid_candidate is None or not comp_cols:
-        return comp_map, pd.DataFrame(), uid_candidate, comp_cols
-
     temp = df.copy()
-    temp[uid_candidate] = temp[uid_candidate].apply(clean_value)
-    temp = temp[temp[uid_candidate].apply(is_position_uid)].copy()
+    temp[comp_uid_col] = temp[comp_uid_col].apply(clean_value)
+    temp = temp[temp[comp_uid_col].apply(is_position_uid)].copy()
+
+    duplicate_comp_uids_df = temp[temp.duplicated(subset=[comp_uid_col], keep=False)].copy()
 
     for _, row in temp.iterrows():
-        uid = clean_value(row.get(uid_candidate, ""))
+        uid = clean_value(row.get(comp_uid_col, ""))
 
         if not uid:
             continue
@@ -632,17 +462,14 @@ def build_competency_map(df):
 
             if comp_name:
                 parsed_name, parsed_code = split_competency_value(comp_name)
-
                 if parsed_code:
                     comp_name = parsed_name
                     comp_code = parsed_code
 
             if comp_code:
                 parsed_name, parsed_code = split_competency_value(comp_code)
-
                 if parsed_code:
                     comp_code = parsed_code
-
                     if parsed_name and not comp_name:
                         comp_name = parsed_name
 
@@ -680,16 +507,16 @@ def build_competency_map(df):
         if uid not in comp_map:
             comp_map[uid] = competencies
 
-    raw_df = pd.DataFrame(raw_rows)
+    summary_df = pd.DataFrame(raw_rows)
 
-    return comp_map, raw_df, uid_candidate, comp_cols
+    return comp_map, summary_df, duplicate_comp_uids_df
 
 
-competency_map, comp_raw_summary_df, comp_uid_col, comp_cols = build_competency_map(comp_raw_df)
+competency_map, comp_summary_df, comp_duplicate_uids_df = build_competency_map(comp_raw_df)
 
 
 # =========================================================
-# TEKRAR EDEN SET TESPİTİ
+# TEKRAR EDEN SET KONTROLÜ
 # =========================================================
 
 def comp_signature(comps):
@@ -721,23 +548,21 @@ def is_repeated_set_uid(uid):
     if not sig:
         return False
 
-    repeat_count = signature_counter.get(sig, 0)
-
-    return repeat_count >= REPEATED_SET_WARNING_LIMIT
+    return signature_counter.get(sig, 0) >= REPEATED_SET_WARNING_LIMIT
 
 
 def get_repeated_set_info(uid):
     uid = clean_value(uid)
     comps = competency_map.get(uid, [])
-    sig = comp_signature(comps)
 
     if not comps:
         return {
             "is_repeated": False,
-            "message": "Bu UID için yetkinlik matrisi içinde yetkinlik bulunamadı.",
+            "message": "Bu UID için Yetkinlik Matrisi içinde yetkinlik bulunamadı.",
             "affected_df": pd.DataFrame(),
         }
 
+    sig = comp_signature(comps)
     repeat_count = signature_counter.get(sig, 0)
 
     if repeat_count < REPEATED_SET_WARNING_LIMIT:
@@ -775,18 +600,13 @@ def get_repeated_set_info(uid):
         "is_repeated": True,
         "message": (
             f"Bu UID’nin yetkinlik seti {repeat_count} farklı UID’de birebir aynı görünüyor. "
-            f"Yetkinlikler Excel’deki UID satırından aynen gösterilmektedir. "
-            f"Bu kayıt kalite kontrol amacıyla işaretlenmiştir."
+            f"Yetkinlikler Excel’deki UID satırından aynen gösterilmektedir."
         ),
         "affected_df": affected_df,
     }
 
 
 def get_competencies_for_uid(uid):
-    """
-    Yetkinlikleri sadece UID birebir eşleşmesiyle Excel'den döndürür.
-    Tekrar eden set olsa bile gizlemez.
-    """
     uid = clean_value(uid)
     return competency_map.get(uid, [])
 
@@ -804,38 +624,35 @@ def build_quality_reports():
     ].copy()
     org_without_comp.columns = ["UID", "Ana Birim / Kurum", "Pozisyon / Birim Adı"]
 
-    comp_without_org_uids = sorted(list(comp_uids - org_uids))
-    comp_without_org = pd.DataFrame({"UID": comp_without_org_uids})
+    comp_without_org = pd.DataFrame({
+        "UID": sorted(list(comp_uids - org_uids))
+    })
 
     repeated_rows = []
 
     for sig, count in signature_counter.items():
         if count >= REPEATED_SET_WARNING_LIMIT:
-            affected = [
-                uid
-                for uid, comps in competency_map.items()
-                if comp_signature(comps) == sig
-            ]
+            for uid, comps in competency_map.items():
+                if comp_signature(comps) == sig:
+                    org_match = org_df[org_df[uid_col] == uid]
 
-            for uid in affected:
-                org_match = org_df[org_df[uid_col] == uid]
-                position_name = ""
-                unit_name = ""
+                    unit_name = ""
+                    position_name = ""
 
-                if not org_match.empty:
-                    position_name = clean_value(org_match.iloc[0].get(position_col, ""))
-                    unit_name = clean_value(org_match.iloc[0].get(unit_col, ""))
+                    if not org_match.empty:
+                        unit_name = clean_value(org_match.iloc[0].get(unit_col, ""))
+                        position_name = clean_value(org_match.iloc[0].get(position_col, ""))
 
-                repeated_rows.append(
-                    {
-                        "UID": uid,
-                        "Ana Birim / Kurum": unit_name,
-                        "Pozisyon / Birim Adı": position_name,
-                        "Tekrar Sayısı": count,
-                        "Yetkinlik Seti": " | ".join(sig),
-                        "Durum": "Tekrar eden set - sadece kalite kontrol uyarısı",
-                    }
-                )
+                    repeated_rows.append(
+                        {
+                            "UID": uid,
+                            "Ana Birim / Kurum": unit_name,
+                            "Pozisyon / Birim Adı": position_name,
+                            "Tekrar Sayısı": count,
+                            "Yetkinlik Seti": " | ".join(sig),
+                            "Durum": "Tekrar eden set - sadece uyarı",
+                        }
+                    )
 
     repeated_sets = pd.DataFrame(repeated_rows)
 
@@ -844,12 +661,13 @@ def build_quality_reports():
     for uid in sorted(org_uids):
         comps = competency_map.get(uid, [])
         org_match = org_df[org_df[uid_col] == uid]
-        position_name = ""
+
         unit_name = ""
+        position_name = ""
 
         if not org_match.empty:
-            position_name = clean_value(org_match.iloc[0].get(position_col, ""))
             unit_name = clean_value(org_match.iloc[0].get(unit_col, ""))
+            position_name = clean_value(org_match.iloc[0].get(position_col, ""))
 
         competency_counts.append(
             {
@@ -883,17 +701,21 @@ def build_quality_reports():
                         "Pozisyon / Birim Adı": position_name,
                         "Yetkinlik Kodu": code,
                         "Yetkinlik Adı": name,
-                        "Sorun": "Kod MASTER_YETKINLIK_LISTESI içinde bulunamadı",
+                        "Sorun": "Kod Master Yetkinlik Listesi içinde bulunamadı",
                     }
                 )
 
     master_missing = pd.DataFrame(master_missing_rows)
 
     duplicate_org = pd.DataFrame()
-
     if not org_duplicate_uids.empty:
         duplicate_org = org_duplicate_uids[[uid_col, unit_col, position_col]].copy()
         duplicate_org.columns = ["UID", "Ana Birim / Kurum", "Pozisyon / Birim Adı"]
+
+    duplicate_comp = pd.DataFrame()
+    if not comp_duplicate_uids_df.empty:
+        duplicate_comp = comp_duplicate_uids_df[[comp_uid_col]].copy()
+        duplicate_comp.columns = ["UID"]
 
     return {
         "Organizasyonda Var Yetkinlikte Yok": org_without_comp,
@@ -902,6 +724,7 @@ def build_quality_reports():
         "UID Yetkinlik Sayıları": competency_counts_df,
         "Master Listede Olmayan Kodlar": master_missing,
         "Organizasyonda Tekrarlı UID": duplicate_org,
+        "Yetkinlik Matrisinde Tekrarlı UID": duplicate_comp,
     }
 
 
@@ -1259,11 +1082,12 @@ if "selected_unit_name" in st.session_state and "selected_unit_uid" in st.sessio
 st.divider()
 
 with st.expander("Yetkinlik Kalite Kontrol Raporu", expanded=False):
-    st.write("Bu bölüm uygulamanın yetkinlik tahmini yapmadan, Excel verisini kontrol etmesi için oluşturulmuştur.")
+    st.write("Bu bölüm sadece Excel verisini kontrol eder. Yetkinlik tahmini yapılmaz.")
 
     st.write("Okunan Excel:", EXCEL_FILE.name)
     st.write("Organizasyon Sayfası:", org_sheet)
-    st.write("Yetkinlik Sayfası:", comp_sheet if comp_sheet else "Bulunamadı")
+    st.write("Yetkinlik Sayfası:", comp_sheet)
+    st.write("Master Sayfası:", master_sheet)
     st.write("Organizasyon UID Sayısı:", len(org_df))
     st.write("Yetkinlik UID Sayısı:", len(competency_map))
     st.write("Tekrar eden set uyarı eşiği:", REPEATED_SET_WARNING_LIMIT)
