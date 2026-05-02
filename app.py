@@ -9,14 +9,14 @@ BASE_DIR = Path(__file__).parent
 
 
 # =========================================================
-# TEMEL YARDIMCI FONKSİYONLAR
+# GENEL YARDIMCI FONKSİYONLAR
 # =========================================================
 
 def normalize_text(x):
     if pd.isna(x):
         return ""
     x = str(x).strip().lower()
-    tr_map = str.maketrans("çğıöşüİ", "cgiosui")
+    tr_map = str.maketrans("çğıöşüİI", "cgiosuii")
     x = x.translate(tr_map)
     x = re.sub(r"\s+", " ", x)
     return x
@@ -25,299 +25,475 @@ def normalize_text(x):
 def clean_value(x):
     if pd.isna(x):
         return ""
-    return str(x).strip()
+    text = str(x).strip()
+    if text.lower() in ["nan", "none", "null"]:
+        return ""
+    return text
 
 
-def is_csgb_uid(value):
+def is_position_uid(value):
     """
-    Pozisyon/Birim UID kontrolü.
-    KY-HRK-06, OF-DEN-02 gibi master yetkinlik kodlarını dışarıda bırakır.
+    Gerçek organizasyon / pozisyon UID'si.
+    Kabul:
+      ÇSGB-BY2-HUK-XXX
+      ÇSGB-BAK-RTB-34B
+      ÇSGK-BAK-XXX-XXX
+
+    Red:
+      KY-HRK-06
+      OF-DEN-02
+      LY-STR-01
     """
     text = clean_value(value).upper()
     return bool(re.match(r"^(ÇSGB|CSGB|ÇSGK|CSGK)-", text))
 
 
-def find_file(extension, keywords):
-    files = list(BASE_DIR.glob(f"*{extension}"))
+def is_competency_code(value):
+    """
+    Yetkinlik kodu formatı.
+    Örnek:
+      OF-DEN-02
+      KY-HRK-06
+      LY-STR-01
+    """
+    text = clean_value(value).upper()
+    return bool(re.match(r"^[A-ZÇĞİÖŞÜ]{2,5}-[A-ZÇĞİÖŞÜ0-9]{2,8}-\d{2}$", text))
+
+
+def find_excel_file():
+    files = list(BASE_DIR.glob("*.xlsx"))
+
     if not files:
         return None
 
-    for f in files:
-        name = normalize_text(f.name)
-        if any(normalize_text(k) in name for k in keywords):
-            return f
+    priority_words = [
+        "çalışma",
+        "csgb",
+        "çsgb",
+        "kodlama",
+        "yetkinlik",
+        "matrisi",
+    ]
+
+    for file in files:
+        name = normalize_text(file.name)
+        if any(normalize_text(w) in name for w in priority_words):
+            return file
 
     return files[0]
 
 
-EXCEL_FILE = find_file(
-    ".xlsx",
-    ["çalışma", "csgb", "çsgb", "yetkinlik", "matrisi"]
-)
+def find_col(df, candidates, exact=False, forbidden=None):
+    forbidden = [normalize_text(x) for x in (forbidden or [])]
+    candidates_norm = [normalize_text(c) for c in candidates]
+
+    for col in df.columns:
+        col_norm = normalize_text(col)
+
+        if any(f in col_norm for f in forbidden):
+            continue
+
+        if col_norm in candidates_norm:
+            return col
+
+    if not exact:
+        for col in df.columns:
+            col_norm = normalize_text(col)
+
+            if any(f in col_norm for f in forbidden):
+                continue
+
+            for cand in candidates_norm:
+                if cand and cand in col_norm:
+                    return col
+
+    return None
+
+
+# =========================================================
+# EXCEL DOSYASINI BUL
+# =========================================================
+
+EXCEL_FILE = find_excel_file()
+
+if EXCEL_FILE is None:
+    st.error("Excel dosyası bulunamadı. Excel dosyasını app.py ile aynı klasöre koy.")
+    st.stop()
 
 
 # =========================================================
 # EXCEL OKUMA
 # =========================================================
 
-def score_header(columns):
-    joined = " ".join([normalize_text(c) for c in columns])
-    score = 0
-
-    for k in [
-        "uid",
-        "ana birim",
-        "kurum",
-        "pozisyon",
-        "birim adi",
-        "yetkinlik 1",
-        "yetkinlik 1 adi",
-        "yetkinlik 1 kodu",
-    ]:
-        if normalize_text(k) in joined:
-            score += 1
-
-    return score
-
-
-@st.cache_data
-def load_excel_matrix(path):
-    """
-    Öncelik doğru yetkinlik matrisi sheet'indedir.
-    Yanlışlıkla MASTER_YETKINLIK_LISTESI veya ÇSGB Kodlama okunmasın diye
-    özellikle Yetkinlik Matrisi v03 aranır.
-    """
+@st.cache_data(show_spinner=False)
+def read_all_sheets(path):
     xls = pd.ExcelFile(path, engine="openpyxl")
-
-    preferred_sheets = [
-        "Yetkinlik Matrisi v03",
-        "Yetkinlik Matrisi",
-        "Yetkinlik Matrisi v02",
-    ]
-
-    # 1) Önce tercih edilen sheet adlarını ara
-    for preferred in preferred_sheets:
-        for sheet in xls.sheet_names:
-            if normalize_text(sheet) == normalize_text(preferred):
-                for header_row in range(0, 10):
-                    try:
-                        temp = pd.read_excel(
-                            path,
-                            sheet_name=sheet,
-                            header=header_row,
-                            engine="openpyxl"
-                        )
-                        temp.columns = [str(c).strip() for c in temp.columns]
-                        temp = temp.dropna(how="all")
-
-                        joined_cols = " ".join([normalize_text(c) for c in temp.columns])
-
-                        if "uid" in joined_cols and "yetkinlik" in joined_cols:
-                            return temp, sheet, header_row
-                    except Exception:
-                        pass
-
-    # 2) Sheet adı tutmazsa en iyi aday sheet'i bul
-    best_df = None
-    best_score = -1
-    best_sheet = None
-    best_header = None
+    sheets = {}
 
     for sheet in xls.sheet_names:
-        # Master yetkinlik listesini doğrudan ele
-        if "master" in normalize_text(sheet):
-            continue
+        best_df = None
+        best_header = None
+        best_score = -999
 
-        for header_row in range(0, 10):
+        for header_row in range(0, 15):
             try:
                 temp = pd.read_excel(
                     path,
                     sheet_name=sheet,
                     header=header_row,
-                    engine="openpyxl"
+                    engine="openpyxl",
                 )
+
                 temp.columns = [str(c).strip() for c in temp.columns]
                 temp = temp.dropna(how="all")
 
                 if temp.empty:
                     continue
 
-                score = score_header(temp.columns)
-                sample_text = " ".join(
-                    temp.astype(str).head(50).fillna("").values.flatten().tolist()
+                cols = " ".join(normalize_text(c) for c in temp.columns)
+                sample = " ".join(
+                    temp.astype(str)
+                    .head(80)
+                    .fillna("")
+                    .values
+                    .flatten()
+                    .tolist()
                 )
 
-                if "ÇSGB-" in sample_text or "CSGB-" in sample_text or "ÇSGK-" in sample_text:
-                    score += 8
+                score = 0
 
-                if "KY-HRK" in sample_text or "OF-DEN" in sample_text:
-                    score -= 2
+                if "uid" in cols:
+                    score += 20
+                if "ana birim" in cols:
+                    score += 15
+                if "pozisyon" in cols:
+                    score += 15
+                if "yetkinlik" in cols:
+                    score += 15
+                if "ÇSGB-" in sample or "CSGB-" in sample or "ÇSGK-" in sample:
+                    score += 20
 
                 if score > best_score:
                     best_score = score
                     best_df = temp
-                    best_sheet = sheet
                     best_header = header_row
 
             except Exception:
                 pass
 
-    return best_df, best_sheet, best_header
+        if best_df is not None:
+            sheets[sheet] = {
+                "df": best_df,
+                "header": best_header,
+            }
+
+    return sheets
 
 
-if EXCEL_FILE is None:
-    st.error("Excel dosyası bulunamadı. app.py ile aynı klasöre Excel dosyasını koyun.")
+sheets = read_all_sheets(EXCEL_FILE)
+
+if not sheets:
+    st.error("Excel okunamadı.")
     st.stop()
-
-df, loaded_sheet, loaded_header = load_excel_matrix(EXCEL_FILE)
-
-if df is None or df.empty:
-    st.error("Excel okunamadı veya uygun Yetkinlik Matrisi sheet'i bulunamadı.")
-    st.stop()
-
-df.columns = [str(c).strip() for c in df.columns]
-df = df.dropna(how="all").copy()
 
 
 # =========================================================
-# KOLON BULMA
+# ÇSGB KODLAMA SAYFASINI BUL
 # =========================================================
 
-def find_col_exact(possible_names):
-    possible = [normalize_text(x) for x in possible_names]
+def looks_like_org_sheet(df):
+    cols = " ".join(normalize_text(c) for c in df.columns)
+
+    has_uid = "uid" in cols
+    has_unit = "ana birim" in cols or "kurum" in cols
+    has_position = "pozisyon" in cols or "birim adi" in cols
+
+    has_real_uid = False
 
     for col in df.columns:
-        if normalize_text(col) in possible:
-            return col
-
-    return None
-
-
-def find_col_soft(possible_names):
-    possible = [normalize_text(x) for x in possible_names]
-
-    # Önce tam eşleşme
-    for col in df.columns:
-        col_norm = normalize_text(col)
-        if col_norm in possible:
-            return col
-
-    # Sonra kontrollü yakın eşleşme
-    for col in df.columns:
-        col_norm = normalize_text(col)
-        for p in possible:
-            if p in col_norm:
-                return col
-
-    return None
-
-
-uid_col = find_col_soft([
-    "UID",
-    "Pozisyon UID",
-    "Birim UID",
-    "Pozisyon Kodu",
-    "Birim Kodu",
-])
-
-if uid_col is None:
-    for col in df.columns:
-        sample_values = df[col].dropna().astype(str).head(200).tolist()
-        if any(is_csgb_uid(v) for v in sample_values):
-            uid_col = col
+        sample = df[col].dropna().astype(str).head(300).tolist()
+        if any(is_position_uid(v) for v in sample):
+            has_real_uid = True
             break
 
-unit_col = find_col_soft([
-    "Ana Birim / Kurum",
-    "Ana Birim",
-    "Kurum",
-    "Üst Birim",
-])
+    return has_uid and has_unit and has_position and has_real_uid
 
-position_col = find_col_soft([
-    "Pozisyon / Birim Adı",
-    "Pozisyon Adı",
-    "Pozisyon",
-    "Birim Adı",
-    "Ad",
-    "Unvan",
-])
 
-if uid_col is None or unit_col is None or position_col is None:
-    st.error("UID, Ana Birim/Kurum veya Pozisyon/Birim Adı kolonu bulunamadı.")
-    st.write("Algılanan kolonlar:", list(df.columns))
+def select_org_sheet(sheets_dict):
+    preferred_names = [
+        "ÇSGB Kodlama",
+        "CSGB Kodlama",
+        "Kodlama",
+        "ÇSGB_Kodlama",
+        "CSGB_Kodlama",
+    ]
+
+    for preferred in preferred_names:
+        for sheet_name, payload in sheets_dict.items():
+            if normalize_text(sheet_name) == normalize_text(preferred):
+                df = payload["df"]
+                if looks_like_org_sheet(df):
+                    return sheet_name, df, payload["header"]
+
+    best_sheet = None
+    best_df = None
+    best_header = None
+    best_score = -999
+
+    for sheet_name, payload in sheets_dict.items():
+        df = payload["df"]
+        sheet_norm = normalize_text(sheet_name)
+        cols = " ".join(normalize_text(c) for c in df.columns)
+
+        if "master" in sheet_norm:
+            continue
+
+        score = 0
+
+        if looks_like_org_sheet(df):
+            score += 100
+
+        if "kodlama" in sheet_norm:
+            score += 40
+
+        if "uid" in cols:
+            score += 20
+
+        if "ana birim" in cols:
+            score += 20
+
+        if "pozisyon" in cols:
+            score += 20
+
+        if "yetkinlik kodu" in cols and "ana birim" not in cols:
+            score -= 100
+
+        if score > best_score:
+            best_score = score
+            best_sheet = sheet_name
+            best_df = df
+            best_header = payload["header"]
+
+    return best_sheet, best_df, best_header
+
+
+org_sheet, org_raw_df, org_header = select_org_sheet(sheets)
+
+if org_raw_df is None or org_raw_df.empty:
+    st.error("ÇSGB Kodlama / organizasyon sayfası bulunamadı.")
     st.stop()
 
 
 # =========================================================
-# SADECE ÇSGB POZİSYON SATIRLARINI TUT
+# ORGANİZASYON KOLONLARI
 # =========================================================
 
-df[uid_col] = df[uid_col].astype(str).str.strip()
+uid_col = find_col(org_raw_df, ["UID"], exact=True)
 
-df = df[df[uid_col].apply(is_csgb_uid)].copy()
+baglilik_col = find_col(
+    org_raw_df,
+    ["Bağlılık Kodu", "Baglilik Kodu"],
+)
 
-df = df[
-    df[position_col].notna() &
-    df[unit_col].notna()
+unit_col = find_col(
+    org_raw_df,
+    ["Ana Birim / Kurum", "Ana Birim", "Kurum"],
+)
+
+level_col = find_col(
+    org_raw_df,
+    ["Seviye"],
+    exact=True,
+)
+
+position_type_col = find_col(
+    org_raw_df,
+    ["Pozisyon Türü", "Pozisyon Turu"],
+)
+
+position_col = find_col(
+    org_raw_df,
+    [
+        "Pozisyon / Birim Adı",
+        "Pozisyon / Birim Adi",
+        "Pozisyon Adı",
+        "Pozisyon Adi",
+        "Pozisyon",
+        "Birim Adı",
+        "Birim Adi",
+    ],
+)
+
+main_code_col = find_col(
+    org_raw_df,
+    ["Ana Birim Kodu"],
+)
+
+alt_code_col = find_col(
+    org_raw_df,
+    ["Alt Kod"],
+)
+
+desc_col = find_col(
+    org_raw_df,
+    [
+        "Görev / Açıklama",
+        "Gorev / Aciklama",
+        "Açıklama",
+        "Aciklama",
+    ],
+)
+
+if uid_col is None or unit_col is None or position_col is None:
+    st.error("ÇSGB Kodlama sayfasında UID, Ana Birim / Kurum veya Pozisyon / Birim Adı kolonu bulunamadı.")
+    st.write("Okunan organizasyon sheet:", org_sheet)
+    st.write("Kolonlar:", list(org_raw_df.columns))
+    st.stop()
+
+
+# =========================================================
+# ORGANİZASYON VERİSİNİ TEMİZLE
+# =========================================================
+
+org_df = org_raw_df.copy()
+
+for col in [
+    uid_col,
+    baglilik_col,
+    unit_col,
+    level_col,
+    position_type_col,
+    position_col,
+    main_code_col,
+    alt_code_col,
+    desc_col,
+]:
+    if col and col in org_df.columns:
+        org_df[col] = org_df[col].apply(clean_value)
+
+org_df = org_df[org_df[uid_col].apply(is_position_uid)].copy()
+
+org_df = org_df[
+    (org_df[uid_col] != "")
+    & (org_df[unit_col] != "")
+    & (org_df[position_col] != "")
 ].copy()
 
-df = df.drop_duplicates(subset=[uid_col]).reset_index(drop=True)
+org_df = org_df.drop_duplicates(subset=[uid_col]).reset_index(drop=True)
 
 
 # =========================================================
-# YETKİNLİK KOLONLARI
+# MASTER YETKİNLİK LİSTESİNDEN KOD → AD SÖZLÜĞÜ
 # =========================================================
 
-def find_competency_columns(dataframe):
+def build_master_competency_lookup(sheets_dict):
+    lookup = {}
+
+    for sheet_name, payload in sheets_dict.items():
+        df = payload["df"]
+        sheet_norm = normalize_text(sheet_name)
+        cols_norm = " ".join(normalize_text(c) for c in df.columns)
+
+        if "master" not in sheet_norm and not (
+            "yetkinlik kodu" in cols_norm and "yetkinlik adi" in cols_norm
+        ):
+            continue
+
+        code_col = find_col(
+            df,
+            ["Yetkinlik Kodu", "Kod", "Kodu"],
+            forbidden=["uid", "pozisyon", "birim"],
+        )
+
+        name_col = find_col(
+            df,
+            ["Yetkinlik Adı", "Yetkinlik Adi", "Yetkinlik"],
+            forbidden=["kodu", "kod", "uid"],
+        )
+
+        if code_col is None or name_col is None:
+            continue
+
+        for _, row in df.iterrows():
+            code = clean_value(row.get(code_col, "")).upper()
+            name = clean_value(row.get(name_col, ""))
+
+            if is_competency_code(code) and name:
+                lookup[code] = name
+
+    return lookup
+
+
+master_lookup = build_master_competency_lookup(sheets)
+
+
+# =========================================================
+# YETKİNLİK SAYFALARINI BUL VE UID BAZLI MAP OLUŞTUR
+# =========================================================
+
+def find_uid_col_for_comp_sheet(df):
+    col = find_col(
+        df,
+        ["UID", "Pozisyon UID", "Birim UID", "Pozisyon Kodu", "Birim Kodu"],
+        exact=True,
+    )
+
+    if col:
+        return col
+
+    for c in df.columns:
+        sample = df[c].dropna().astype(str).head(300).tolist()
+        if any(is_position_uid(v) for v in sample):
+            return c
+
+    return None
+
+
+def find_competency_columns(df):
     """
-    Yetkinlik kolonlarını güvenli şekilde bulur.
-    Ağırlık, seviye, ölçüm tipi kolonlarını yetkinlik adı sanmaz.
+    Yetkinlik 1-5 veya 1-10 kolonlarını bulur.
+    Hem ayrı kolon formatını hem de tek hücre formatını destekler.
     """
     result = []
-    normalized_map = {
-        normalize_text(col): col
-        for col in dataframe.columns
-    }
+    col_map = {normalize_text(c): c for c in df.columns}
 
-    for i in range(1, 6):
+    for i in range(1, 11):
         name_col = None
         code_col = None
 
-        code_candidates = [
+        name_candidates = {
+            f"yetkinlik {i} adi",
+            f"yetkinlik {i} ad",
+            f"yetkinlik {i} adı",
+            f"yetkinlik{i} adi",
+            f"yetkinlik{i} ad",
+            f"yetkinlik{i} adı",
+        }
+
+        code_candidates = {
             f"yetkinlik {i} kodu",
             f"yetkinlik {i} kod",
             f"yetkinlik{i} kodu",
             f"yetkinlik{i} kod",
-        ]
+        }
 
-        name_candidates = [
-            f"yetkinlik {i} adi",
-            f"yetkinlik {i} ad",
-            f"yetkinlik{i} adi",
-            f"yetkinlik{i} ad",
-        ]
-
-        single_candidates = [
+        single_candidates = {
             f"yetkinlik {i}",
             f"yetkinlik{i}",
-        ]
+        }
 
-        # Kod kolonunu kesin bul
-        for norm_col, original_col in normalized_map.items():
+        for norm_col, original_col in col_map.items():
             if norm_col in code_candidates:
                 code_col = original_col
                 break
 
-        # Ad kolonunu kesin bul
-        for norm_col, original_col in normalized_map.items():
+        for norm_col, original_col in col_map.items():
             if norm_col in name_candidates:
                 name_col = original_col
                 break
 
-        # Eski v02 formatında tek kolon varsa
         if name_col is None:
-            for norm_col, original_col in normalized_map.items():
+            for norm_col, original_col in col_map.items():
                 if norm_col in single_candidates:
                     name_col = original_col
                     break
@@ -328,236 +504,317 @@ def find_competency_columns(dataframe):
     return result
 
 
-competency_cols = find_competency_columns(df)
-
-
 def split_competency_value(value):
     """
-    'OF-DEN-02 - Risk Bazlı Denetim'
-    veya
-    'OF-DEN-02 – Risk Bazlı Denetim'
-    formatını ad/kod olarak ayırır.
+    'OF-DEN-02 - Risk Bazlı Denetim' formatını ayırır.
     """
-    if pd.isna(value):
+    text = clean_value(value)
+
+    if not text:
         return "", ""
 
-    text = str(value).strip()
-
     m = re.match(
-        r"^([A-ZÇĞİÖŞÜ]{2,3}-[A-ZÇĞİÖŞÜ]{2,5}-\d{2})\s*[-–]\s*(.+)$",
-        text
+        r"^([A-ZÇĞİÖŞÜ]{2,5}-[A-ZÇĞİÖŞÜ0-9]{2,8}-\d{2})\s*[-–—]\s*(.+)$",
+        text,
+        flags=re.IGNORECASE,
     )
 
     if m:
-        code = m.group(1).strip()
-        name = m.group(2).strip()
-        return name, code
+        return m.group(2).strip(), m.group(1).strip().upper()
 
-    # Sadece kod gelirse
     m2 = re.match(
-        r"^([A-ZÇĞİÖŞÜ]{2,3}-[A-ZÇĞİÖŞÜ]{2,5}-\d{2})$",
-        text
+        r"^([A-ZÇĞİÖŞÜ]{2,5}-[A-ZÇĞİÖŞÜ0-9]{2,8}-\d{2})$",
+        text,
+        flags=re.IGNORECASE,
     )
 
     if m2:
-        return "", m2.group(1).strip()
+        return "", m2.group(1).strip().upper()
 
     return text, ""
 
 
-def get_competencies_from_row(row):
-    competencies = []
+def looks_like_competency_matrix(df, sheet_name):
+    sheet_norm = normalize_text(sheet_name)
+    cols = " ".join(normalize_text(c) for c in df.columns)
 
-    for name_col, code_col in competency_cols:
-        raw_name = row.get(name_col, "") if name_col else ""
-        raw_code = row.get(code_col, "") if code_col else ""
+    if "master" in sheet_norm:
+        return False
 
-        comp_name = clean_value(raw_name)
-        comp_code = clean_value(raw_code)
+    if "yetkinlik" not in cols:
+        return False
 
-        # Tek hücrede "KOD - AD" varsa parçala
-        if comp_name:
-            parsed_name, parsed_code = split_competency_value(comp_name)
-            if parsed_code:
-                comp_name = parsed_name
-                comp_code = parsed_code
+    uid_col_candidate = find_uid_col_for_comp_sheet(df)
 
-        # Kod kolonuna yanlışlıkla "KOD - AD" gelirse parçala
-        if comp_code and " - " in comp_code:
-            parsed_name, parsed_code = split_competency_value(comp_code)
-            if parsed_code:
-                comp_name = parsed_name
-                comp_code = parsed_code
+    if uid_col_candidate is None:
+        return False
 
-        # Boş veya yanlış değerleri temizle
-        if not comp_name and not comp_code:
+    sample = df[uid_col_candidate].dropna().astype(str).head(300).tolist()
+
+    return any(is_position_uid(v) for v in sample)
+
+
+def build_competency_map_from_excel(sheets_dict):
+    """
+    Excel'deki tüm uygun yetkinlik matrisi sayfalarını tarar.
+    UID bazında yetkinlikleri toplar.
+    """
+    comp_map = {}
+    used_sheets = []
+
+    for sheet_name, payload in sheets_dict.items():
+        df = payload["df"]
+
+        if not looks_like_competency_matrix(df, sheet_name):
             continue
 
-        # UID gibi pozisyon kodu yetkinlik olarak görünmesin
-        if is_csgb_uid(comp_name) or is_csgb_uid(comp_code):
+        uid_candidate = find_uid_col_for_comp_sheet(df)
+        comp_cols = find_competency_columns(df)
+
+        if uid_candidate is None or not comp_cols:
             continue
 
-        competencies.append({
-            "name": comp_name,
-            "code": comp_code
-        })
+        used_sheets.append(sheet_name)
 
-    return competencies
+        temp = df.copy()
+        temp[uid_candidate] = temp[uid_candidate].apply(clean_value)
+        temp = temp[temp[uid_candidate].apply(is_position_uid)].copy()
+
+        for _, row in temp.iterrows():
+            uid = clean_value(row.get(uid_candidate, ""))
+
+            if not uid:
+                continue
+
+            if uid not in comp_map:
+                comp_map[uid] = []
+
+            seen = {(x["code"], x["name"]) for x in comp_map[uid]}
+
+            for name_col, code_col in comp_cols:
+                raw_name = row.get(name_col, "") if name_col else ""
+                raw_code = row.get(code_col, "") if code_col else ""
+
+                comp_name = clean_value(raw_name)
+                comp_code = clean_value(raw_code).upper()
+
+                # Tek hücre formatı: "OF-DEN-02 - Risk Bazlı Denetim"
+                if comp_name:
+                    parsed_name, parsed_code = split_competency_value(comp_name)
+
+                    if parsed_code:
+                        comp_name = parsed_name
+                        comp_code = parsed_code
+
+                # Kod kolonunda tek hücre formatı olursa
+                if comp_code:
+                    parsed_name, parsed_code = split_competency_value(comp_code)
+
+                    if parsed_code:
+                        comp_code = parsed_code
+
+                        if parsed_name and not comp_name:
+                            comp_name = parsed_name
+
+                # Kod varsa master lookup ile adı tamamla
+                if comp_code and not comp_name:
+                    comp_name = master_lookup.get(comp_code, "")
+
+                # Ad varsa ama kod boşsa olduğu gibi göster
+                if not comp_code and not comp_name:
+                    continue
+
+                # Pozisyon UID yanlışlıkla yetkinlik gibi görünmesin
+                if is_position_uid(comp_name) or is_position_uid(comp_code):
+                    continue
+
+                key = (comp_code, comp_name)
+
+                if key in seen:
+                    continue
+
+                seen.add(key)
+
+                comp_map[uid].append(
+                    {
+                        "code": comp_code,
+                        "name": comp_name,
+                        "source_sheet": sheet_name,
+                    }
+                )
+
+    return comp_map, used_sheets
+
+
+competency_map, competency_source_sheets = build_competency_map_from_excel(sheets)
+
+
+def get_competencies_for_uid(uid):
+    uid = clean_value(uid)
+    return competency_map.get(uid, [])
 
 
 # =========================================================
-# ORGANİZASYON GRUPLARI
+# EXCEL'DEN ORGANİZASYON GRUPLARINI ÜRET
 # =========================================================
 
-org_groups = {
-    "ÇSGB-BY1": [
-        "Dış İlişkiler ve Avrupa Birliği Genel Müdürlüğü",
-        "Sosyal Güvenlik Kurumu",
-        "Strateji Geliştirme Başkanlığı",
-    ],
-    "ÇSGB-BY2": [
-        "Bilgi Teknolojileri Genel Müdürlüğü",
-        "Hukuk Hizmetleri Genel Müdürlüğü",
-        "Çalışma ve Sosyal Güvenlik Eğitim ve Araştırma Merkezi",
-        "Ereğli Kömür Havzası Amele Birliği Biriktirme ve Yardımlaşma Sandığı",
-    ],
-    "ÇSGB-BY3": [
-        "Çalışma Genel Müdürlüğü",
-        "Uluslararası İşgücü Genel Müdürlüğü",
-        "Mesleki Yeterlilik Kurumu",
-    ],
-    "ÇSGB-BY4": [
-        "İş Sağlığı ve Güvenliği Genel Müdürlüğü",
-        "Türkiye İş Kurumu Genel Müdürlüğü",
-    ],
-    "ÇSGB-BAK": [
-        "Basın ve Halkla İlişkiler Müşavirliği",
-        "Destek Hizmetleri Dairesi Başkanlığı",
-        "İç Denetim Birimi Başkanlığı",
-        "Özel Kalem Müdürlüğü",
-        "Personel Dairesi Başkanlığı",
-        "Rehberlik ve Teftiş Başkanlığı",
-    ],
-}
+def is_top_manager_row(row):
+    uid = clean_value(row.get(uid_col, "")).upper()
+    pos = normalize_text(row.get(position_col, ""))
+    unit = normalize_text(row.get(unit_col, ""))
 
-top_titles = [
-    "Bakan Yardımcısı",
-    "Bakan Yardımcısı",
-    "Bakan Yardımcısı",
-    "Bakan Yardımcısı",
-    "Bağlı Birimler",
-]
-
-aliases = {
-    "Türkiye İş Kurumu Genel Müdürlüğü": ["Türkiye İş Kurumu", "İŞKUR", "ISKUR", "İşkur"],
-    "Sosyal Güvenlik Kurumu": ["Sosyal Güvenlik Kurumu", "SGK"],
-    "İş Sağlığı ve Güvenliği Genel Müdürlüğü": ["İş Sağlığı", "İSGGM", "ISGGM"],
-    "Bilgi Teknolojileri Genel Müdürlüğü": ["Bilgi Teknolojileri"],
-    "Çalışma Genel Müdürlüğü": ["Çalışma Genel"],
-    "Mesleki Yeterlilik Kurumu": ["Mesleki Yeterlilik", "MYK"],
-    "Rehberlik ve Teftiş Başkanlığı": ["Rehberlik ve Teftiş", "RTB"],
-    "Personel Dairesi Başkanlığı": ["Personel Dairesi"],
-    "Destek Hizmetleri Dairesi Başkanlığı": ["Destek Hizmetleri"],
-    "Strateji Geliştirme Başkanlığı": ["Strateji Geliştirme"],
-    "Hukuk Hizmetleri Genel Müdürlüğü": ["Hukuk Hizmetleri"],
-    "İç Denetim Birimi Başkanlığı": ["İç Denetim"],
-    "Özel Kalem Müdürlüğü": ["Özel Kalem"],
-    "Basın ve Halkla İlişkiler Müşavirliği": ["Basın ve Halkla İlişkiler"],
-    "Dış İlişkiler ve Avrupa Birliği Genel Müdürlüğü": ["Dış İlişkiler", "Avrupa Birliği"],
-    "Uluslararası İşgücü Genel Müdürlüğü": ["Uluslararası İşgücü"],
-    "Çalışma ve Sosyal Güvenlik Eğitim ve Araştırma Merkezi": ["Eğitim ve Araştırma", "ÇASGEM", "CASGEM"],
-    "Ereğli Kömür Havzası Amele Birliği Biriktirme ve Yardımlaşma Sandığı": ["Ereğli", "Amele Birliği"],
-}
+    return (
+        pos == "bakan"
+        or unit == "bakan"
+        or "bakan yardimcisi" in pos
+        or "bakan yardimcisi" in unit
+        or re.match(r"^Ç?S?G?B?-?BY\d-XXX-XXX$", uid) is not None
+    )
 
 
-def find_rows_for_unit(unit_name):
-    """
-    Birime ait satırları güvenli biçimde bulur.
-    Önce Ana Birim/Kurum kolonuna bakar.
-    Master yetkinlik satırları zaten df filtresinde temizlendiği için
-    KY-HRK-06 gibi kodlar pozisyon olarak gelmez.
-    """
-    terms = [unit_name] + aliases.get(unit_name, [])
-    terms_norm = [normalize_text(t) for t in terms]
+def is_main_unit_row(row):
+    uid = clean_value(row.get(uid_col, "")).upper()
+    level = normalize_text(row.get(level_col, "")) if level_col else ""
+    ptype = normalize_text(row.get(position_type_col, "")) if position_type_col else ""
 
-    unit_values = df[unit_col].astype(str).apply(normalize_text)
+    return (
+        "ana birim" in level
+        or "ana birim" in ptype
+        or uid.endswith("-XXX")
+    )
 
-    mask = pd.Series(False, index=df.index)
 
-    # Ana Birim/Kurum tam eşleşme
-    for term in terms_norm:
-        mask = mask | (unit_values == term)
+def get_group_code(row):
+    if baglilik_col and baglilik_col in row:
+        code = clean_value(row.get(baglilik_col, ""))
+        if code:
+            return code
 
-    # Ana Birim/Kurum içerir eşleşme
-    if not mask.any():
-        for term in terms_norm:
-            mask = mask | unit_values.str.contains(term, na=False, regex=False)
+    uid = clean_value(row.get(uid_col, ""))
 
-    # Son çare: pozisyon adında ara
-    if not mask.any():
-        pos_values = df[position_col].astype(str).apply(normalize_text)
-        for term in terms_norm:
-            mask = mask | pos_values.str.contains(term, na=False, regex=False)
+    parts = uid.split("-")
 
-    unit_df = df[mask].copy()
+    if len(parts) >= 2:
+        return parts[1]
 
-    unit_df = unit_df[
-        unit_df[uid_col].apply(is_csgb_uid) &
-        unit_df[position_col].notna()
+    return "DİĞER"
+
+
+main_units_df = org_df[org_df.apply(is_main_unit_row, axis=1)].copy()
+main_units_df = main_units_df[~main_units_df.apply(is_top_manager_row, axis=1)].copy()
+
+main_units_df["_group"] = main_units_df.apply(get_group_code, axis=1)
+main_units_df["_sort_name"] = main_units_df[position_col].astype(str).apply(normalize_text)
+main_units_df = main_units_df.sort_values(["_group", "_sort_name"])
+
+
+def build_group_titles():
+    titles = {}
+
+    top_rows = org_df[org_df.apply(is_top_manager_row, axis=1)].copy()
+
+    for _, row in top_rows.iterrows():
+        group = get_group_code(row)
+        uid = clean_value(row.get(uid_col, ""))
+        pos = clean_value(row.get(position_col, ""))
+        unit = clean_value(row.get(unit_col, ""))
+
+        if group.startswith("BY"):
+            title = unit or pos or f"Bakan Yardımcısı - {group.replace('BY', '')}"
+        elif group == "BAK":
+            title = "Bağlı Birimler"
+        else:
+            title = unit or pos or group
+
+        titles[group] = title
+
+    for group in main_units_df["_group"].dropna().unique().tolist():
+        if group not in titles:
+            if str(group).startswith("BY"):
+                titles[group] = f"Bakan Yardımcısı - {str(group).replace('BY', '')}"
+            elif group == "BAK":
+                titles[group] = "Bağlı Birimler"
+            else:
+                titles[group] = str(group)
+
+    return titles
+
+
+group_titles = build_group_titles()
+
+preferred_order = ["BY1", "BY2", "BY3", "BY4", "BAK"]
+
+all_groups = main_units_df["_group"].dropna().unique().tolist()
+
+ordered_groups = [g for g in preferred_order if g in all_groups]
+ordered_groups += [g for g in all_groups if g not in ordered_groups]
+
+
+# =========================================================
+# BİRİM DETAYLARI
+# =========================================================
+
+def get_rows_for_unit(unit_uid, unit_name):
+    unit_uid = clean_value(unit_uid)
+    unit_name_norm = normalize_text(unit_name)
+
+    unit_code = ""
+
+    main_row = org_df[org_df[uid_col] == unit_uid]
+
+    if not main_row.empty and main_code_col:
+        unit_code = clean_value(main_row.iloc[0].get(main_code_col, ""))
+
+    rows = org_df[
+        org_df[unit_col].astype(str).apply(normalize_text) == unit_name_norm
     ].copy()
 
-    unit_df = unit_df.drop_duplicates(subset=[uid_col])
+    if unit_code and main_code_col:
+        rows_by_code = org_df[
+            org_df[main_code_col].astype(str).apply(clean_value) == unit_code
+        ].copy()
 
-    # Ana birim satırı en üste gelsin
+        rows = pd.concat([rows, rows_by_code], ignore_index=True)
+
+    if rows.empty and unit_uid:
+        prefix = "-".join(unit_uid.split("-")[:3])
+        rows = org_df[
+            org_df[uid_col].astype(str).str.startswith(prefix, na=False)
+        ].copy()
+
+    rows = rows[rows[uid_col].apply(is_position_uid)].copy()
+    rows = rows.drop_duplicates(subset=[uid_col])
+
+    if rows.empty:
+        return rows
+
     def sort_key(row):
-        uid = clean_value(row[uid_col]).upper()
-        pos = normalize_text(row[position_col])
-        unit = normalize_text(row[unit_col])
+        uid = clean_value(row.get(uid_col, "")).upper()
+        pos = normalize_text(row.get(position_col, ""))
+        unit = normalize_text(row.get(unit_col, ""))
+        level = normalize_text(row.get(level_col, "")) if level_col else ""
 
         is_main = (
-            uid.endswith("-XXX") or
-            pos == normalize_text(unit_name) or
-            unit == normalize_text(unit_name)
+            uid == unit_uid.upper()
+            or uid.endswith("-XXX")
+            or pos == unit_name_norm
+            or ("ana birim" in level and unit == unit_name_norm)
         )
 
         return (0 if is_main else 1, uid)
 
-    if not unit_df.empty:
-        unit_df["_sort_key"] = unit_df.apply(sort_key, axis=1)
-        unit_df = unit_df.sort_values("_sort_key").drop(columns=["_sort_key"])
+    rows["_sort"] = rows.apply(sort_key, axis=1)
+    rows = rows.sort_values("_sort").drop(columns=["_sort"])
 
-    return unit_df
-
-
-def get_unit_uid(unit_name):
-    unit_df = find_rows_for_unit(unit_name)
-
-    if unit_df.empty:
-        return ""
-
-    # Ana birim / kurum satırını seçmeye çalış
-    exact = unit_df[
-        unit_df[position_col].astype(str).apply(normalize_text) == normalize_text(unit_name)
-    ]
-
-    if not exact.empty:
-        return clean_value(exact.iloc[0][uid_col])
-
-    xxx = unit_df[
-        unit_df[uid_col].astype(str).str.upper().str.endswith("-XXX")
-    ]
-
-    if not xxx.empty:
-        return clean_value(xxx.iloc[0][uid_col])
-
-    return clean_value(unit_df.iloc[0][uid_col])
+    return rows
 
 
 # =========================================================
 # CSS
 # =========================================================
 
-st.markdown("""
+st.markdown(
+    """
 <style>
 .title-box {
     border:2px solid #ddd;
@@ -576,11 +833,17 @@ st.markdown("""
     background:#e30613;
     color:white;
     text-align:center;
-    padding:18px 8px;
-    font-size:18px;
+    padding:16px 8px;
+    font-size:17px;
     font-weight:800;
-    margin-bottom:18px;
+    margin-bottom:14px;
     box-shadow:0 3px 8px rgba(0,0,0,0.25);
+}
+.org-uid {
+    font-size:12px;
+    font-weight:600;
+    margin-top:5px;
+    opacity:0.95;
 }
 .stButton button {
     font-weight:700 !important;
@@ -591,7 +854,7 @@ st.markdown("""
     border:1px solid #ddd;
     border-radius:8px;
     padding:14px;
-    margin-bottom:10px;
+    margin-bottom:8px;
     box-shadow:0 2px 5px rgba(0,0,0,0.08);
 }
 .uid-card {
@@ -601,6 +864,13 @@ st.markdown("""
     margin-top:6px;
     font-weight:700;
     text-align:center;
+}
+.meta-card {
+    background:#f7f7f7;
+    border:1px solid #e1e1e1;
+    padding:8px;
+    margin-top:6px;
+    font-size:12px;
 }
 .competency-card {
     background:#ffffff;
@@ -612,101 +882,136 @@ st.markdown("""
 }
 .small-note {
     font-size:12px;
-    color:#666;
+    color:#555;
     text-align:center;
+    margin-top:-5px;
+    margin-bottom:8px;
 }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 
 # =========================================================
 # ÜST BAŞLIK
 # =========================================================
 
-st.markdown("""
+st.markdown(
+    """
 <div class="title-box">
     <div class="title-red">T.C. Çalışma ve Sosyal Güvenlik Bakanlığı</div>
     <div style="font-size:22px;">Yetkinlik Haritası Çalışması</div>
 </div>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
+
 
 with st.expander("Veri kontrol bilgisi", expanded=False):
     st.write("Okunan Excel:", EXCEL_FILE.name)
-    st.write("Okunan Sheet:", loaded_sheet)
-    st.write("Header Satırı:", loaded_header)
+    st.write("Organizasyon Sheet:", org_sheet)
+    st.write("Organizasyon Header Satırı:", org_header)
+    st.write("Organizasyon Satırı Sayısı:", len(org_df))
+    st.write("Ana Birim Sayısı:", len(main_units_df))
+    st.write("Gruplar:", ordered_groups)
+    st.write("Yetkinlik Kaynak Sheetleri:", competency_source_sheets)
+    st.write("UID Bazlı Yetkinlik Eşleşen Satır Sayısı:", len(competency_map))
+    st.write("Master Yetkinlik Lookup Sayısı:", len(master_lookup))
     st.write("UID Kolonu:", uid_col)
     st.write("Ana Birim / Kurum Kolonu:", unit_col)
     st.write("Pozisyon / Birim Adı Kolonu:", position_col)
-    st.write("Yetkinlik Kolonları:", competency_cols)
-    st.write("Kullanılan pozisyon satırı sayısı:", len(df))
 
 
 # =========================================================
 # ORGANİZASYON ŞEMASI
 # =========================================================
 
-cols = st.columns(5)
+if not ordered_groups:
+    st.warning("Excel içinde gösterilecek ana birim grubu bulunamadı.")
+    st.stop()
 
-for idx, (top_uid, units) in enumerate(org_groups.items()):
+cols = st.columns(len(ordered_groups))
+
+for idx, group_code in enumerate(ordered_groups):
+    group_units = main_units_df[main_units_df["_group"] == group_code].copy()
+
     with cols[idx]:
-        title_text = top_titles[idx] if idx < len(top_titles) else top_uid
+        title = group_titles.get(group_code, group_code)
 
         st.markdown(
             f"""
             <div class='org-red'>
-                {title_text}
-                <div style="font-size:12px; margin-top:4px;">{top_uid}</div>
+                {title}
+                <div class='org-uid'>ÇSGB-{group_code}</div>
             </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
 
-        for unit in units:
-            unit_uid = get_unit_uid(unit)
-            button_label = unit
+        if group_units.empty:
+            st.info("Bu grupta ana birim bulunamadı.")
 
-            if st.button(button_label, key=f"{top_uid}_{unit}", use_container_width=True):
-                st.session_state["selected_unit"] = unit
+        for _, unit_row in group_units.iterrows():
+            unit_name = clean_value(unit_row[position_col])
+            unit_uid = clean_value(unit_row[uid_col])
 
-                # Eski açık yetkinlikleri kapat
-                for k in list(st.session_state.keys()):
-                    if str(k).startswith("toggle_"):
-                        del st.session_state[k]
+            if st.button(
+                unit_name,
+                key=f"unit_btn_{group_code}_{unit_uid}",
+                use_container_width=True,
+            ):
+                st.session_state["selected_unit_name"] = unit_name
+                st.session_state["selected_unit_uid"] = unit_uid
 
-            if unit_uid:
-                st.markdown(
-                    f"<div class='small-note'>{unit_uid}</div>",
-                    unsafe_allow_html=True
-                )
+                for key in list(st.session_state.keys()):
+                    if str(key).startswith("toggle_"):
+                        del st.session_state[key]
+
+            st.markdown(
+                f"<div class='small-note'>{unit_uid}</div>",
+                unsafe_allow_html=True,
+            )
 
 
 # =========================================================
 # SEÇİLEN BİRİM DETAYI
 # =========================================================
 
-if "selected_unit" in st.session_state:
-    selected_unit = st.session_state["selected_unit"]
+if "selected_unit_name" in st.session_state and "selected_unit_uid" in st.session_state:
+    selected_unit_name = st.session_state["selected_unit_name"]
+    selected_unit_uid = st.session_state["selected_unit_uid"]
 
     st.divider()
-    st.subheader(selected_unit)
+    st.subheader(selected_unit_name)
 
-    unit_df = find_rows_for_unit(selected_unit)
+    unit_df = get_rows_for_unit(selected_unit_uid, selected_unit_name)
 
     if unit_df.empty:
         st.warning("Bu birim Excel içinde bulunamadı.")
+
     else:
-        for i, row in unit_df.iterrows():
+        for _, row in unit_df.iterrows():
             position_name = clean_value(row.get(position_col, ""))
             uid = clean_value(row.get(uid_col, ""))
+
+            desc = clean_value(row.get(desc_col, "")) if desc_col else ""
+            level = clean_value(row.get(level_col, "")) if level_col else ""
+            ptype = clean_value(row.get(position_type_col, "")) if position_type_col else ""
 
             st.markdown(
                 f"""
                 <div class="detail-card">
                     <b>{position_name}</b>
                     <div class="uid-card">{uid}</div>
+                    <div class="meta-card">
+                        <b>Seviye:</b> {level} &nbsp; | &nbsp;
+                        <b>Pozisyon Türü:</b> {ptype}
+                    </div>
+                    {f'<div class="meta-card"><b>Görev / Açıklama:</b> {desc}</div>' if desc else ''}
                 </div>
                 """,
-                unsafe_allow_html=True
+                unsafe_allow_html=True,
             )
 
             toggle_key = f"toggle_{uid}"
@@ -717,19 +1022,23 @@ if "selected_unit" in st.session_state:
             if st.button(
                 "Yetkinlikleri Göster",
                 key=f"btn_{uid}",
-                use_container_width=True
+                use_container_width=True,
             ):
                 st.session_state[toggle_key] = not st.session_state[toggle_key]
 
             if st.session_state[toggle_key]:
-                competencies = get_competencies_from_row(row)
+                competencies = get_competencies_for_uid(uid)
 
                 if not competencies:
-                    st.info("Bu satır için yetkinlik bulunamadı.")
+                    st.info("Bu UID için Excel’de yetkinlik bulunamadı.")
+
                 else:
                     for comp in competencies:
-                        comp_name = comp["name"]
-                        comp_code = comp["code"]
+                        comp_name = clean_value(comp.get("name", ""))
+                        comp_code = clean_value(comp.get("code", ""))
+
+                        if not comp_name and not comp_code:
+                            continue
 
                         st.markdown(
                             f"""
@@ -738,6 +1047,5 @@ if "selected_unit" in st.session_state:
                                 <div class="uid-card">{comp_code}</div>
                             </div>
                             """,
-                            unsafe_allow_html=True
+                            unsafe_allow_html=True,
                         )
-                        
