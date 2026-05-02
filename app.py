@@ -387,7 +387,7 @@ master_lookup = build_master_competency_lookup(sheets)
 
 
 # =========================================================
-# YETKİNLİK MATRİSİ
+# YETKİNLİK MATRİSİ OKUMA
 # =========================================================
 
 def find_uid_col_for_comp_sheet(df):
@@ -646,7 +646,7 @@ competency_map, selected_competency_sheet = build_competency_map_from_excel(shee
 
 
 # =========================================================
-# POZİSYON ADINA GÖRE YETKİNLİK DÜZELTME KATMANI
+# POZİSYON ADINA GÖRE YETKİNLİK DÜZELTME
 # =========================================================
 
 def has_generic_repeated_set(comps):
@@ -666,20 +666,22 @@ def has_generic_repeated_set(comps):
 def override_competencies_by_position(position_name, uid, excel_competencies):
     text = normalize_text(position_name)
     uid_text = clean_value(uid).upper()
+    generic = has_generic_repeated_set(excel_competencies)
 
-    should_override = has_generic_repeated_set(excel_competencies)
+    def ret(items):
+        return [{"code": code, "name": name} for code, name in items]
 
     # Hukuk / müşavirlik
     if "hukuk" in text or "musavir" in text or "müşavir" in text:
-        return [
-            {"code": "KY-HUK-01", "name": "İdare Hukuku Okuryazarlığı"},
-            {"code": "KY-HUK-03", "name": "Hukuki Risk Analizi"},
-            {"code": "KY-HUK-05", "name": "Sözleşme Hukuku"},
-            {"code": "SP-REG-02", "name": "Mevzuat Analizi"},
-            {"code": "DB-ETK-03", "name": "Tarafsızlık"},
-        ]
+        return ret([
+            ("KY-HUK-01", "İdare Hukuku Okuryazarlığı"),
+            ("KY-HUK-03", "Hukuki Risk Analizi"),
+            ("KY-HUK-05", "Sözleşme Hukuku"),
+            ("SP-REG-02", "Mevzuat Analizi"),
+            ("DB-ETK-03", "Tarafsızlık"),
+        ])
 
-    # Bilgi teknolojileri / bilgi işlem / yazılım / sistem
+    # Bilgi işlem / teknoloji / yazılım / sistem
     if (
         "bilgi islem" in text
         or "bilgi işlem" in text
@@ -687,64 +689,76 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
         or "yazilim" in text
         or "yazılım" in text
         or "sistem" in text
-        or "veri" in text
+        or "donanim" in text
+        or "donanım" in text
     ):
-        if "guvenlik" in text or "güvenlik" in text or "siber" in text:
-            return [
-                {"code": "DA-SBR-01", "name": "Siber Güvenlik Yönetimi"},
-                {"code": "DA-SBR-02", "name": "Bilgi Güvenliği Politikası"},
-                {"code": "DA-SBR-06", "name": "Siber Risk Analizi"},
-                {"code": "DA-SYS-01", "name": "Bilgi Sistemleri Yönetimi"},
-                {"code": "DB-ETK-05", "name": "Gizlilik Bilinci"},
-            ]
+        return ret([
+            ("DA-SYS-01", "Bilgi Sistemleri Yönetimi"),
+            ("DA-SYS-03", "Yazılım Geliştirme Yönetimi"),
+            ("DA-SBR-01", "Siber Güvenlik Yönetimi"),
+            ("DA-DTR-01", "Dijital Dönüşüm Yönetimi"),
+            ("OF-PRJ-01", "Proje Yönetimi"),
+        ])
 
-        if "veri" in text or "raporlama" in text:
-            return [
-                {"code": "DA-DAT-01", "name": "Veri Analitiği"},
-                {"code": "DA-DAT-03", "name": "Veri Görselleştirme"},
-                {"code": "DA-DAT-05", "name": "Veri Yönetişimi"},
-                {"code": "DA-DAT-06", "name": "Veri Kalitesi"},
-                {"code": "DA-DAT-08", "name": "Analitik Karar Destek"},
-            ]
+    # Veri / raporlama / istatistik
+    if "veri" in text or "raporlama" in text or "istatistik" in text:
+        return ret([
+            ("DA-DAT-01", "Veri Analitiği"),
+            ("DA-DAT-03", "Veri Görselleştirme"),
+            ("DA-DAT-05", "Veri Yönetişimi"),
+            ("DA-DAT-06", "Veri Kalitesi"),
+            ("DA-DAT-08", "Analitik Karar Destek"),
+        ])
 
-        return [
-            {"code": "DA-SYS-01", "name": "Bilgi Sistemleri Yönetimi"},
-            {"code": "DA-DAT-01", "name": "Veri Analitiği"},
-            {"code": "DA-SBR-01", "name": "Siber Güvenlik Yönetimi"},
-            {"code": "DA-DTR-01", "name": "Dijital Dönüşüm Yönetimi"},
-            {"code": "OF-PRJ-01", "name": "Proje Yönetimi"},
-        ]
+    # Siber / bilgi güvenliği / koruma
+    if "siber" in text or "bilgi guvenligi" in text or "bilgi güvenliği" in text:
+        return ret([
+            ("DA-SBR-01", "Siber Güvenlik Yönetimi"),
+            ("DA-SBR-02", "Bilgi Güvenliği Politikası"),
+            ("DA-SBR-04", "Erişim Yetkisi Yönetimi"),
+            ("DA-SBR-06", "Siber Risk Analizi"),
+            ("DB-ETK-05", "Gizlilik Bilinci"),
+        ])
 
-    # Strateji / performans / kalite / bütçe
+    # Strateji / performans / kalite
     if "strateji" in text or "performans" in text or "kalite" in text:
-        return [
-            {"code": "SP-PLN-01", "name": "Stratejik Planlama"},
-            {"code": "LY-PRF-02", "name": "SBG Yönetimi"},
-            {"code": "KY-FIN-03", "name": "Performans Bazlı Bütçe"},
-            {"code": "OF-SUR-03", "name": "Süreç İyileştirme"},
-            {"code": "DA-DAT-03", "name": "Veri Görselleştirme"},
-        ]
+        return ret([
+            ("SP-PLN-01", "Stratejik Planlama"),
+            ("LY-PRF-02", "SBG Yönetimi"),
+            ("KY-FIN-03", "Performans Bazlı Bütçe"),
+            ("OF-SUR-03", "Süreç İyileştirme"),
+            ("DA-DAT-03", "Veri Görselleştirme"),
+        ])
 
-    if "butce" in text or "bütçe" in text or "muhasebe" in text or "mali" in text or "ic kontrol" in text or "iç kontrol" in text:
-        return [
-            {"code": "KY-FIN-01", "name": "Bütçe Yönetimi"},
-            {"code": "KY-FIN-03", "name": "Performans Bazlı Bütçe"},
-            {"code": "KY-FIN-04", "name": "Mali Analiz"},
-            {"code": "KY-FIN-05", "name": "İç Kontrol"},
-            {"code": "OF-DEN-02", "name": "Risk Bazlı Denetim"},
-        ]
+    # Bütçe / muhasebe / mali / iç kontrol / tahakkuk
+    if (
+        "butce" in text
+        or "bütçe" in text
+        or "muhasebe" in text
+        or "mali" in text
+        or "ic kontrol" in text
+        or "iç kontrol" in text
+        or "tahakkuk" in text
+    ):
+        return ret([
+            ("KY-FIN-01", "Bütçe Yönetimi"),
+            ("KY-FIN-03", "Performans Bazlı Bütçe"),
+            ("KY-FIN-04", "Mali Analiz"),
+            ("KY-FIN-05", "İç Kontrol"),
+            ("OF-DEN-02", "Risk Bazlı Denetim"),
+        ])
 
     # Denetim / teftiş / rehberlik
     if "denetim" in text or "teftis" in text or "teftiş" in text or "rehberlik" in text:
-        return [
-            {"code": "OF-DEN-02", "name": "Risk Bazlı Denetim"},
-            {"code": "OF-DEN-03", "name": "Bulgulama"},
-            {"code": "OF-DEN-08", "name": "Denetim Raporlama"},
-            {"code": "KY-HUK-03", "name": "Hukuki Risk Analizi"},
-            {"code": "DB-ETK-03", "name": "Tarafsızlık"},
-        ]
+        return ret([
+            ("OF-DEN-02", "Risk Bazlı Denetim"),
+            ("OF-DEN-03", "Bulgulama"),
+            ("OF-DEN-08", "Denetim Raporlama"),
+            ("KY-HUK-03", "Hukuki Risk Analizi"),
+            ("DB-ETK-03", "Tarafsızlık"),
+        ])
 
-    # İnsan kaynakları / personel / atama / disiplin / özlük / eğitim
+    # Personel / insan kaynakları / atama / disiplin / özlük
     if (
         "personel" in text
         or "insan kaynaklari" in text
@@ -754,18 +768,28 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
         or "disiplin" in text
         or "ozluk" in text
         or "özlük" in text
-        or "egitim" in text
-        or "eğitim" in text
+        or "emeklilik islemleri" in text
+        or "emeklilik işlemleri" in text
     ):
-        return [
-            {"code": "KY-HRK-01", "name": "Kamu Personel Rejimi"},
-            {"code": "KY-HRK-02", "name": "Atama ve Kadro Yönetimi"},
-            {"code": "KY-HRK-06", "name": "Eğitim ve Gelişim"},
-            {"code": "KY-HRK-07", "name": "Disiplin Süreçleri"},
-            {"code": "DB-ETK-03", "name": "Tarafsızlık"},
-        ]
+        return ret([
+            ("KY-HRK-01", "Kamu Personel Rejimi"),
+            ("KY-HRK-02", "Atama ve Kadro Yönetimi"),
+            ("KY-HRK-06", "Eğitim ve Gelişim"),
+            ("KY-HRK-07", "Disiplin Süreçleri"),
+            ("DB-ETK-03", "Tarafsızlık"),
+        ])
 
-    # İhale / satın alma / destek / taşınır / emlak / teknik hizmetler
+    # Eğitim şubeleri
+    if "egitim" in text or "eğitim" in text:
+        return ret([
+            ("KY-HRK-06", "Eğitim ve Gelişim"),
+            ("OF-SUR-04", "Standart Operasyon Prosedürü"),
+            ("DB-COG-06", "Öğrenme Çevikliği"),
+            ("SP-PAY-01", "Paydaş Yönetimi"),
+            ("DA-DAT-05", "Veri Kalitesi"),
+        ])
+
+    # İhale / satın alma / destek / teknik / emlak / taşınır
     if (
         "ihale" in text
         or "satinalma" in text
@@ -777,16 +801,21 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
         or "teknik" in text
         or "ulastirma" in text
         or "ulaştırma" in text
+        or "arac" in text
+        or "araç" in text
+        or "evrak" in text
+        or "arsiv" in text
+        or "arşiv" in text
     ):
-        return [
-            {"code": "OF-IHL-01", "name": "İhale Yönetimi"},
-            {"code": "OF-IHL-02", "name": "Satın Alma Planlama"},
-            {"code": "OF-IHL-04", "name": "Sözleşme Yönetimi"},
-            {"code": "KY-FIN-01", "name": "Bütçe Yönetimi"},
-            {"code": "OF-SUR-01", "name": "Süreç Yönetimi"},
-        ]
+        return ret([
+            ("OF-IHL-01", "İhale Yönetimi"),
+            ("OF-IHL-02", "Satın Alma Planlama"),
+            ("OF-IHL-04", "Sözleşme Yönetimi"),
+            ("KY-FIN-01", "Bütçe Yönetimi"),
+            ("OF-SUR-01", "Süreç Yönetimi"),
+        ])
 
-    # Uluslararası / dış ilişkiler / AB
+    # Dış ilişkiler / AB / uluslararası / yurtdışı
     if (
         "uluslararasi" in text
         or "uluslararası" in text
@@ -799,75 +828,148 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
         or "anlasmalar" in text
         or "anlaşmalar" in text
     ):
-        return [
-            {"code": "KY-INT-01", "name": "AB Uyum Yönetimi"},
-            {"code": "KY-INT-02", "name": "Uluslararası Anlaşmalar"},
-            {"code": "KY-INT-03", "name": "Uluslararası Kuruluş İlişkileri"},
-            {"code": "KY-INT-06", "name": "Diplomatik Yazışma"},
-            {"code": "SP-PAY-06", "name": "Uluslararası Koordinasyon"},
-        ]
+        return ret([
+            ("KY-INT-01", "AB Uyum Yönetimi"),
+            ("KY-INT-02", "Uluslararası Anlaşmalar"),
+            ("KY-INT-03", "Uluslararası Kuruluş İlişkileri"),
+            ("KY-INT-06", "Diplomatik Yazışma"),
+            ("SP-PAY-06", "Uluslararası Koordinasyon"),
+        ])
 
     # İş sağlığı ve güvenliği
-    if "is sagligi" in text or "iş sağlığı" in text or "isg" in text or "isggm" in text or "guvenligi" in text or "güvenliği" in text:
-        return [
-            {"code": "KY-ISG-01", "name": "İSG Mevzuatı"},
-            {"code": "KY-ISG-02", "name": "Sektörel Risk Analizi"},
-            {"code": "KY-ISG-03", "name": "Piyasa Gözetim ve Denetim"},
-            {"code": "KY-ISG-05", "name": "İSG Veri Yönetimi"},
-            {"code": "SP-REG-01", "name": "Regülasyon Tasarımı"},
-        ]
-
-    # Sınav / belgelendirme / yeterlilik / standart
     if (
-        "sinav" in text
-        or "sınav" in text
-        or "belgelendirme" in text
-        or "yeterlilik" in text
-        or "standart" in text
-        or "sektor komiteleri" in text
-        or "sektör komiteleri" in text
+        "is sagligi" in text
+        or "iş sağlığı" in text
+        or "isg" in text
+        or "isggm" in text
+        or "piyasa gozetim" in text
+        or "piyasa gözetim" in text
+        or "sektorel risk" in text
+        or "sektörel risk" in text
+        or "yetkilendirme" in text
     ):
-        return [
-            {"code": "KY-HRK-06", "name": "Eğitim ve Gelişim"},
-            {"code": "SP-REG-01", "name": "Regülasyon Tasarımı"},
-            {"code": "OF-SUR-04", "name": "Standart Operasyon Prosedürü"},
-            {"code": "DA-DAT-05", "name": "Veri Kalitesi"},
-            {"code": "SP-PAY-01", "name": "Paydaş Yönetimi"},
-        ]
+        return ret([
+            ("KY-ISG-01", "İSG Mevzuatı"),
+            ("KY-ISG-02", "Sektörel Risk Analizi"),
+            ("KY-ISG-03", "Piyasa Gözetim ve Denetim"),
+            ("KY-ISG-05", "İSG Veri Yönetimi"),
+            ("SP-REG-01", "Regülasyon Tasarımı"),
+        ])
+
+    # MYK - Sınav ve Belgelendirme
+    if "sinav" in text or "sınav" in text or "belgelendirme" in text:
+        return ret([
+            ("OF-SUR-04", "Standart Operasyon Prosedürü"),
+            ("DA-DAT-05", "Veri Kalitesi"),
+            ("SP-REG-01", "Regülasyon Tasarımı"),
+            ("SP-PAY-01", "Paydaş Yönetimi"),
+            ("DB-ETK-03", "Tarafsızlık"),
+        ])
+
+    # MYK - Ulusal Yeterlilik
+    if "ulusal yeterlilik" in text:
+        return ret([
+            ("SP-REG-01", "Regülasyon Tasarımı"),
+            ("SP-REG-02", "Mevzuat Analizi"),
+            ("OF-SUR-04", "Standart Operasyon Prosedürü"),
+            ("DA-DAT-05", "Veri Kalitesi"),
+            ("SP-PAY-01", "Paydaş Yönetimi"),
+        ])
+
+    # MYK - Sektör Komiteleri
+    if "sektor komiteleri" in text or "sektör komiteleri" in text:
+        return ret([
+            ("SP-PAY-01", "Paydaş Yönetimi"),
+            ("SP-PAY-05", "Sosyal Diyalog"),
+            ("SP-REG-01", "Regülasyon Tasarımı"),
+            ("OF-SUR-04", "Standart Operasyon Prosedürü"),
+            ("DB-SOS-05", "İşbirliği"),
+        ])
+
+    # MYK - genel yeterlilik / standart
+    if "yeterlilik" in text or "standart" in text:
+        return ret([
+            ("SP-REG-01", "Regülasyon Tasarımı"),
+            ("SP-REG-02", "Mevzuat Analizi"),
+            ("OF-SUR-04", "Standart Operasyon Prosedürü"),
+            ("DA-DAT-05", "Veri Kalitesi"),
+            ("SP-PAY-01", "Paydaş Yönetimi"),
+        ])
 
     # Basın / halkla ilişkiler
     if "basin" in text or "basın" in text or "halkla iliskiler" in text or "halkla ilişkiler" in text:
-        return [
-            {"code": "SP-PAY-04", "name": "Kamu İletişimi"},
-            {"code": "SP-PAY-07", "name": "Kriz İletişimi"},
-            {"code": "SP-PAY-08", "name": "İtibar Yönetimi"},
-            {"code": "DB-SOS-07", "name": "Dinleme"},
-            {"code": "LY-KAR-06", "name": "Politik Duyarlılık"},
-        ]
+        return ret([
+            ("SP-PAY-04", "Kamu İletişimi"),
+            ("SP-PAY-07", "Kriz İletişimi"),
+            ("SP-PAY-08", "İtibar Yönetimi"),
+            ("DB-SOS-07", "Dinleme"),
+            ("LY-KAR-06", "Politik Duyarlılık"),
+        ])
 
-    # Sosyal güvenlik
-    if "sosyal guvenlik" in text or "sosyal güvenlik" in text or "sgk" in uid_text:
-        return [
-            {"code": "KY-SGK-01", "name": "Sosyal Güvenlik Sistemi"},
-            {"code": "KY-SGK-02", "name": "Aktüeryal Analiz"},
-            {"code": "KY-FIN-04", "name": "Mali Analiz"},
-            {"code": "DA-DAT-01", "name": "Veri Analitiği"},
-            {"code": "OF-DEN-02", "name": "Risk Bazlı Denetim"},
-        ]
+    # Sosyal güvenlik / SGK
+    if (
+        "sosyal guvenlik" in text
+        or "sosyal güvenlik" in text
+        or "emeklilik hizmetleri" in text
+        or "genel saglik" in text
+        or "genel sağlık" in text
+        or "sigorta prim" in text
+        or "sgk" in uid_text
+    ):
+        return ret([
+            ("KY-SGK-01", "Sosyal Güvenlik Sistemi"),
+            ("KY-SGK-02", "Aktüeryal Analiz"),
+            ("KY-FIN-04", "Mali Analiz"),
+            ("DA-DAT-01", "Veri Analitiği"),
+            ("OF-DEN-02", "Risk Bazlı Denetim"),
+        ])
 
     # İŞKUR / istihdam
-    if "iskur" in text or "işkur" in text or "isgucu" in text or "işgücü" in text or "istihdam" in text or "issizlik" in text or "işsizlik" in text:
-        return [
-            {"code": "SP-POL-01", "name": "Politika Geliştirme"},
-            {"code": "KY-HRK-05", "name": "Yetenek Yönetimi"},
-            {"code": "OF-HIZ-01", "name": "Hizmet Tasarımı"},
-            {"code": "DA-DAT-08", "name": "Analitik Karar Destek"},
-            {"code": "SP-PAY-05", "name": "Sosyal Diyalog"},
-        ]
+    if (
+        "iskur" in text
+        or "işkur" in text
+        or "isgucu" in text
+        or "işgücü" in text
+        or "istihdam" in text
+        or "issizlik" in text
+        or "işsizlik" in text
+        or "meslek danisman" in text
+        or "meslek danışman" in text
+    ):
+        return ret([
+            ("SP-POL-01", "Politika Geliştirme"),
+            ("KY-HRK-05", "Yetenek Yönetimi"),
+            ("OF-HIZ-01", "Hizmet Tasarımı"),
+            ("DA-DAT-08", "Analitik Karar Destek"),
+            ("SP-PAY-05", "Sosyal Diyalog"),
+        ])
 
-    # Eğer Excel genel/kopya set değilse Excel'deki birebir UID setini kullan
-    if excel_competencies and not should_override:
-        return excel_competencies
+    # Çalışma Genel Müdürlüğü alanları
+    if (
+        "sendika" in text
+        or "toplu is" in text
+        or "toplu iş" in text
+        or "calisma" in text
+        or "çalışma" in text
+        or "istihdam politik" in text
+    ):
+        return ret([
+            ("SP-POL-01", "Politika Geliştirme"),
+            ("SP-POL-02", "Politika Analizi"),
+            ("KY-HRK-08", "Sendika ve Çalışma İlişkileri"),
+            ("SP-PAY-05", "Sosyal Diyalog"),
+            ("DA-DAT-01", "Veri Analitiği"),
+        ])
+
+    # Genel/kopya set varsa ve pozisyon hiçbir kategoriye girmediyse aynısını basma
+    if generic:
+        return ret([
+            ("LY-STR-01", "Stratejik Liderlik"),
+            ("SP-PLN-01", "Stratejik Planlama"),
+            ("OF-SUR-01", "Süreç Yönetimi"),
+            ("SP-PAY-01", "Paydaş Yönetimi"),
+            ("DB-COG-01", "Analitik Düşünme"),
+        ])
 
     return excel_competencies
 
