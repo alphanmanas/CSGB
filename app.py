@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 import re
+from collections import Counter
 
 st.set_page_config(page_title="ÇSGB Yetkinlik Haritası", layout="wide")
 
@@ -91,12 +92,12 @@ def find_col(df, candidates, exact=False, forbidden=None):
     return None
 
 
-def has_any(text, phrases):
-    return any(normalize_text(p) in text for p in phrases)
-
-
 def make_competencies(items):
     return [{"code": code, "name": name} for code, name in items]
+
+
+def has_any(text, phrases):
+    return any(normalize_text(p) in text for p in phrases)
 
 
 # =========================================================
@@ -347,11 +348,12 @@ org_df = org_df.drop_duplicates(subset=[uid_col]).reset_index(drop=True)
 
 
 # =========================================================
-# MASTER YETKİNLİK KOD -> AD LOOKUP
+# MASTER YETKİNLİK LİSTESİ
 # =========================================================
 
-def build_master_competency_lookup(sheets_dict):
+def build_master_competency_data(sheets_dict):
     lookup = {}
+    rows = []
 
     for sheet_name, payload in sheets_dict.items():
         df = payload["df"]
@@ -385,13 +387,28 @@ def build_master_competency_lookup(sheets_dict):
             code = clean_value(row.get(code_col, "")).upper()
             name = clean_value(row.get(name_col, ""))
 
-            if is_competency_code(code) and name:
-                lookup[code] = name
+            if not is_competency_code(code) or not name:
+                continue
 
-    return lookup
+            lookup[code] = name
+
+            search_text_parts = [code, name]
+
+            for c in df.columns:
+                val = clean_value(row.get(c, ""))
+                if val and c not in [code_col, name_col]:
+                    search_text_parts.append(val)
+
+            rows.append({
+                "code": code,
+                "name": name,
+                "search_text": normalize_text(" ".join(search_text_parts)),
+            })
+
+    return lookup, rows
 
 
-master_lookup = build_master_competency_lookup(sheets)
+master_lookup, master_rows = build_master_competency_data(sheets)
 
 
 # =========================================================
@@ -654,459 +671,435 @@ competency_map, selected_competency_sheet = build_competency_map_from_excel(shee
 
 
 # =========================================================
-# POZİSYON ADINA GÖRE YETKİNLİK DÜZELTME
+# TEKRAR EDEN / KOPYA SET TESPİTİ
 # =========================================================
 
-def has_generic_repeated_set(comps):
-    codes = {clean_value(c.get("code", "")).upper() for c in comps}
+def comp_signature(comps):
+    codes = sorted([
+        clean_value(c.get("code", "")).upper()
+        for c in comps
+        if clean_value(c.get("code", ""))
+    ])
+    return tuple(codes)
 
-    generic_sets = [
+
+signature_counter = Counter()
+
+for uid, comps in competency_map.items():
+    sig = comp_signature(comps)
+    if sig:
+        signature_counter[sig] += 1
+
+
+def is_repeated_or_generic_set(comps):
+    sig = comp_signature(comps)
+
+    if not sig:
+        return False
+
+    if signature_counter.get(sig, 0) >= 4:
+        return True
+
+    known_generic_sets = [
         {"KY-HRK-06", "SP-REG-01", "OF-SUR-04", "DA-DAT-05", "SP-PAY-01"},
         {"SP-POL-01", "SP-POL-02", "KY-HRK-08", "SP-PAY-05", "DA-DAT-01"},
+        {"KY-INT-01", "KY-INT-02", "KY-INT-03", "KY-INT-06", "SP-PAY-06"},
     ]
 
-    for gs in generic_sets:
+    codes = set(sig)
+
+    for gs in known_generic_sets:
         if gs.issubset(codes):
             return True
 
     return False
 
 
-def override_competencies_by_position(position_name, uid, excel_competencies):
-    text = normalize_text(position_name)
-    uid_text = clean_value(uid).upper()
-    generic = has_generic_repeated_set(excel_competencies)
+# =========================================================
+# POZİSYON BAZLI YETKİNLİK SEÇİMİ
+# =========================================================
 
-    # 1. Hukuk
-    if has_any(text, [
-        "hukuk hizmetleri",
-        "hukuk daire",
-        "hukuk musavirligi",
-        "hukuk müşavirliği",
-        "hukuk musavir",
-        "hukuk müşavir",
-        "dava",
-        "icra",
-        "mevzuat hazirlama",
-        "mevzuat hazırlama",
-    ]):
-        return make_competencies([
-            ("KY-HUK-01", "İdare Hukuku Okuryazarlığı"),
-            ("KY-HUK-03", "Hukuki Risk Analizi"),
-            ("KY-HUK-05", "Sözleşme Hukuku"),
+SPECIFIC_RULES = [
+    {
+        "phrases": ["anlasmalar daire", "anlaşmalar daire", "uluslararasi anlasmalar", "uluslararası anlaşmalar"],
+        "items": [
+            ("KY-INT-02", "Uluslararası Anlaşmalar"),
             ("SP-REG-02", "Mevzuat Analizi"),
-            ("DB-ETK-03", "Tarafsızlık"),
-        ])
-
-    # 2. Çalışma istatistikleri
-    if has_any(text, [
-        "calisma istatistik",
-        "çalışma istatistik",
-        "istatistikleri daire",
-        "istatistik daire",
-        "analiz ve raporlama",
-        "raporlama daire",
-    ]):
-        return make_competencies([
+            ("KY-HUK-05", "Sözleşme Hukuku"),
+            ("KY-INT-06", "Diplomatik Yazışma"),
+            ("SP-PAY-06", "Uluslararası Koordinasyon"),
+        ],
+    },
+    {
+        "phrases": ["avrupa birligi mali", "avrupa birliği mali", "ab mali yardim", "ab mali yardım", "avrupa birligi ve mali yardimlar"],
+        "items": [
+            ("KY-INT-01", "AB Uyum Yönetimi"),
+            ("KY-INT-04", "AB Fon ve Mali Yardım Yönetimi"),
+            ("SP-REG-02", "Mevzuat Analizi"),
+            ("SP-PAY-06", "Uluslararası Koordinasyon"),
+            ("DA-DAT-05", "Veri Kalitesi"),
+        ],
+    },
+    {
+        "phrases": ["uluslararasi kurulus", "uluslararası kuruluş", "uluslararasi proje", "uluslararası proje", "kuruluslar ve projeler", "kuruluşlar ve projeler"],
+        "items": [
+            ("KY-INT-03", "Uluslararası Kuruluş İlişkileri"),
+            ("OF-PRJ-01", "Proje Yönetimi"),
+            ("SP-PAY-06", "Uluslararası Koordinasyon"),
+            ("KY-INT-06", "Diplomatik Yazışma"),
+            ("SP-PAY-01", "Paydaş Yönetimi"),
+        ],
+    },
+    {
+        "phrases": ["yurtdisi", "yurtdışı", "dis temsilcilik", "dış temsilcilik", "yurtdisi teskilat", "yurtdışı teşkilat"],
+        "items": [
+            ("KY-INT-06", "Diplomatik Yazışma"),
+            ("KY-INT-03", "Uluslararası Kuruluş İlişkileri"),
+            ("SP-PAY-06", "Uluslararası Koordinasyon"),
+            ("DB-SOS-07", "Dinleme"),
+            ("LY-KAR-06", "Politik Duyarlılık"),
+        ],
+    },
+    {
+        "phrases": ["dis iliskiler ve avrupa birligi genel mudurlugu", "dış ilişkiler ve avrupa birliği genel müdürlüğü"],
+        "items": [
+            ("LY-STR-01", "Stratejik Liderlik"),
+            ("SP-PAY-06", "Uluslararası Koordinasyon"),
+            ("KY-INT-01", "AB Uyum Yönetimi"),
+            ("KY-INT-03", "Uluslararası Kuruluş İlişkileri"),
+            ("SP-PLN-01", "Stratejik Planlama"),
+        ],
+    },
+    {
+        "phrases": ["calisma istatistik", "çalışma istatistik", "istatistikleri daire", "istatistik daire", "analiz ve raporlama"],
+        "items": [
             ("DA-DAT-01", "Veri Analitiği"),
             ("DA-DAT-03", "Veri Görselleştirme"),
             ("DA-DAT-06", "Veri Kalitesi"),
             ("SP-POL-03", "Etki Analizi"),
             ("DA-DAT-08", "Analitik Karar Destek"),
-        ])
-
-    # 3. Sendika / toplu iş / sosyal diyalog
-    if has_any(text, [
-        "sendika",
-        "toplu is",
-        "toplu iş",
-        "grev",
-        "lokavt",
-        "sosyal diyalog",
-        "uygulama daire baskanligi",
-        "uygulama daire başkanlığı",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["sendika", "toplu is", "toplu iş", "grev", "lokavt", "sosyal diyalog"],
+        "items": [
             ("KY-HRK-08", "Sendika ve Çalışma İlişkileri"),
             ("SP-PAY-05", "Sosyal Diyalog"),
             ("SP-POL-02", "Politika Analizi"),
             ("KY-HUK-01", "İdare Hukuku Okuryazarlığı"),
             ("DB-SOS-05", "İşbirliği"),
-        ])
-
-    # 4. Çalışma mevzuatı / çalışma politikası
-    if has_any(text, [
-        "calisma mevzuat",
-        "çalışma mevzuat",
-        "calisma politika",
-        "çalışma politika",
-        "istihdam politik",
-        "calisma genel mudurlugu",
-        "çalışma genel müdürlüğü",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["calisma mevzuat", "çalışma mevzuat", "istihdam politik", "calisma politika", "çalışma politika"],
+        "items": [
             ("SP-POL-01", "Politika Geliştirme"),
             ("SP-POL-02", "Politika Analizi"),
             ("SP-REG-02", "Mevzuat Analizi"),
             ("SP-PAY-05", "Sosyal Diyalog"),
             ("DA-DAT-01", "Veri Analitiği"),
-        ])
-
-    # 5. Bilgi teknolojileri / yazılım / sistem
-    if has_any(text, [
-        "bilgi teknolojileri",
-        "bilgi islem",
-        "bilgi işlem",
-        "yazilim",
-        "yazılım",
-        "sistem gelistirme",
-        "sistem geliştirme",
-        "altyapi",
-        "altyapı",
-        "proje yonetimi daire",
-        "proje yönetimi daire",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["hukuk hizmetleri", "hukuk daire", "hukuk musavir", "hukuk müşavir", "dava", "icra"],
+        "items": [
+            ("KY-HUK-01", "İdare Hukuku Okuryazarlığı"),
+            ("KY-HUK-03", "Hukuki Risk Analizi"),
+            ("KY-HUK-05", "Sözleşme Hukuku"),
+            ("SP-REG-02", "Mevzuat Analizi"),
+            ("DB-ETK-03", "Tarafsızlık"),
+        ],
+    },
+    {
+        "phrases": ["bilgi teknolojileri", "bilgi islem", "bilgi işlem", "yazilim", "yazılım", "sistem gelistirme", "sistem geliştirme", "altyapi", "altyapı"],
+        "items": [
             ("DA-SYS-01", "Bilgi Sistemleri Yönetimi"),
             ("DA-SYS-03", "Yazılım Geliştirme Yönetimi"),
             ("DA-SBR-01", "Siber Güvenlik Yönetimi"),
             ("DA-DTR-01", "Dijital Dönüşüm Yönetimi"),
             ("OF-PRJ-01", "Proje Yönetimi"),
-        ])
-
-    # 6. Bilgi güvenliği / siber
-    if has_any(text, [
-        "bilgi guvenligi",
-        "bilgi güvenliği",
-        "siber",
-        "guvenlik politikasi",
-        "güvenlik politikası",
-        "erisim yetkisi",
-        "erişim yetkisi",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["bilgi guvenligi", "bilgi güvenliği", "siber", "erisim yetkisi", "erişim yetkisi"],
+        "items": [
             ("DA-SBR-01", "Siber Güvenlik Yönetimi"),
             ("DA-SBR-02", "Bilgi Güvenliği Politikası"),
             ("DA-SBR-04", "Erişim Yetkisi Yönetimi"),
             ("DA-SBR-06", "Siber Risk Analizi"),
             ("DB-ETK-05", "Gizlilik Bilinci"),
-        ])
-
-    # 7. Veri / istatistik / dashboard
-    if has_any(text, [
-        "veri analitigi",
-        "veri analitiği",
-        "veri yonetimi",
-        "veri yönetimi",
-        "veri ambar",
-        "dashboard",
-        "raporlama sistemi",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["veri analitigi", "veri analitiği", "veri yonetimi", "veri yönetimi", "veri ambar", "dashboard", "raporlama sistemi"],
+        "items": [
             ("DA-DAT-01", "Veri Analitiği"),
             ("DA-DAT-03", "Veri Görselleştirme"),
             ("DA-DAT-05", "Veri Yönetişimi"),
             ("DA-DAT-06", "Veri Kalitesi"),
             ("DA-DAT-08", "Analitik Karar Destek"),
-        ])
-
-    # 8. Strateji / performans / kalite
-    if has_any(text, [
-        "strateji gelistirme",
-        "strateji geliştirme",
-        "performans ve kalite",
-        "stratejik plan",
-        "performans program",
-        "kalite yonetimi",
-        "kalite yönetimi",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["strateji gelistirme", "strateji geliştirme", "performans ve kalite", "stratejik plan", "performans program", "kalite yonetimi", "kalite yönetimi"],
+        "items": [
             ("SP-PLN-01", "Stratejik Planlama"),
             ("LY-PRF-02", "SBG Yönetimi"),
             ("KY-FIN-03", "Performans Bazlı Bütçe"),
             ("OF-SUR-03", "Süreç İyileştirme"),
             ("DA-DAT-03", "Veri Görselleştirme"),
-        ])
-
-    # 9. Bütçe / mali / muhasebe / iç kontrol
-    if has_any(text, [
-        "butce",
-        "bütçe",
-        "muhasebe",
-        "mali hizmet",
-        "mali analiz",
-        "ic kontrol",
-        "iç kontrol",
-        "tahakkuk",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["butce", "bütçe", "muhasebe", "mali hizmet", "mali analiz", "ic kontrol", "iç kontrol", "tahakkuk"],
+        "items": [
             ("KY-FIN-01", "Bütçe Yönetimi"),
             ("KY-FIN-03", "Performans Bazlı Bütçe"),
             ("KY-FIN-04", "Mali Analiz"),
             ("KY-FIN-05", "İç Kontrol"),
             ("OF-DEN-02", "Risk Bazlı Denetim"),
-        ])
-
-    # 10. Denetim / teftiş / rehberlik
-    if has_any(text, [
-        "ic denetim",
-        "iç denetim",
-        "rehberlik ve teftis",
-        "rehberlik ve teftiş",
-        "teftis baskanligi",
-        "teftiş başkanlığı",
-        "grup baskanligi",
-        "grup başkanlığı",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["ic denetim", "iç denetim", "rehberlik ve teftis", "rehberlik ve teftiş", "teftis baskanligi", "teftiş başkanlığı", "grup baskanligi", "grup başkanlığı"],
+        "items": [
             ("OF-DEN-02", "Risk Bazlı Denetim"),
             ("OF-DEN-03", "Bulgulama"),
             ("OF-DEN-08", "Denetim Raporlama"),
             ("KY-HUK-03", "Hukuki Risk Analizi"),
             ("DB-ETK-03", "Tarafsızlık"),
-        ])
-
-    # 11. Personel / İK / atama / disiplin
-    if has_any(text, [
-        "personel dairesi",
-        "personel sube",
-        "personel şube",
-        "atama ve kadro",
-        "disiplin",
-        "ozluk",
-        "özlük",
-        "insan kaynaklari",
-        "insan kaynakları",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["personel dairesi", "personel sube", "personel şube", "atama ve kadro", "disiplin", "ozluk", "özlük", "insan kaynaklari", "insan kaynakları"],
+        "items": [
             ("KY-HRK-01", "Kamu Personel Rejimi"),
             ("KY-HRK-02", "Atama ve Kadro Yönetimi"),
             ("KY-HRK-06", "Eğitim ve Gelişim"),
             ("KY-HRK-07", "Disiplin Süreçleri"),
             ("DB-ETK-03", "Tarafsızlık"),
-        ])
-
-    # 12. Eğitim birimleri
-    if has_any(text, [
-        "egitim ve sinav",
-        "eğitim ve sınav",
-        "egitim sube",
-        "eğitim şube",
-        "egitim merkezi",
-        "eğitim merkezi",
-        "hizmet ici egitim",
-        "hizmet içi eğitim",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["egitim ve sinav", "eğitim ve sınav", "egitim sube", "eğitim şube", "egitim merkezi", "eğitim merkezi", "hizmet ici egitim", "hizmet içi eğitim"],
+        "items": [
             ("KY-HRK-06", "Eğitim ve Gelişim"),
             ("OF-SUR-04", "Standart Operasyon Prosedürü"),
             ("DB-COG-06", "Öğrenme Çevikliği"),
             ("SP-PAY-01", "Paydaş Yönetimi"),
             ("DA-DAT-05", "Veri Kalitesi"),
-        ])
-
-    # 13. İhale / satın alma / destek / teknik
-    if has_any(text, [
-        "ihale",
-        "satinalma",
-        "satın alma",
-        "destek hizmetleri",
-        "tasınır",
-        "taşınır",
-        "emlak",
-        "teknik hizmet",
-        "ulastirma",
-        "ulaştırma",
-        "arac ve gerec",
-        "araç ve gereç",
-        "evrak ve arsiv",
-        "evrak ve arşiv",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["ihale", "satinalma", "satın alma", "destek hizmetleri", "tasınır", "taşınır", "emlak", "teknik hizmet", "ulastirma", "ulaştırma", "evrak ve arsiv", "evrak ve arşiv"],
+        "items": [
             ("OF-IHL-01", "İhale Yönetimi"),
             ("OF-IHL-02", "Satın Alma Planlama"),
             ("OF-IHL-04", "Sözleşme Yönetimi"),
             ("KY-FIN-01", "Bütçe Yönetimi"),
             ("OF-SUR-01", "Süreç Yönetimi"),
-        ])
-
-    # 14. Dış ilişkiler / AB / uluslararası
-    if has_any(text, [
-        "dis iliskiler",
-        "dış ilişkiler",
-        "avrupa birligi",
-        "avrupa birliği",
-        "uluslararasi",
-        "uluslararası",
-        "yurtdisi",
-        "yurtdışı",
-        "anlasmalar",
-        "anlaşmalar",
-        "protokol",
-    ]):
-        return make_competencies([
-            ("KY-INT-01", "AB Uyum Yönetimi"),
-            ("KY-INT-02", "Uluslararası Anlaşmalar"),
-            ("KY-INT-03", "Uluslararası Kuruluş İlişkileri"),
-            ("KY-INT-06", "Diplomatik Yazışma"),
-            ("SP-PAY-06", "Uluslararası Koordinasyon"),
-        ])
-
-    # 15. İş sağlığı ve güvenliği
-    if has_any(text, [
-        "is sagligi ve guvenligi",
-        "iş sağlığı ve güvenliği",
-        "isg hizmetleri",
-        "isggm",
-        "piyasa gozetim",
-        "piyasa gözetim",
-        "sektorel risk",
-        "sektörel risk",
-        "yetkilendirme daire",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["is sagligi ve guvenligi", "iş sağlığı ve güvenliği", "isg hizmetleri", "isggm", "piyasa gozetim", "piyasa gözetim", "sektorel risk", "sektörel risk", "yetkilendirme daire"],
+        "items": [
             ("KY-ISG-01", "İSG Mevzuatı"),
             ("KY-ISG-02", "Sektörel Risk Analizi"),
             ("KY-ISG-03", "Piyasa Gözetim ve Denetim"),
             ("KY-ISG-05", "İSG Veri Yönetimi"),
             ("SP-REG-01", "Regülasyon Tasarımı"),
-        ])
-
-    # 16. MYK - sınav ve belgelendirme
-    if has_any(text, [
-        "sinav ve belgelendirme",
-        "sınav ve belgelendirme",
-        "belgelendirme daire",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["sinav ve belgelendirme", "sınav ve belgelendirme", "belgelendirme daire"],
+        "items": [
             ("OF-SUR-04", "Standart Operasyon Prosedürü"),
             ("DA-DAT-05", "Veri Kalitesi"),
             ("SP-REG-01", "Regülasyon Tasarımı"),
             ("SP-PAY-01", "Paydaş Yönetimi"),
             ("DB-ETK-03", "Tarafsızlık"),
-        ])
-
-    # 17. MYK - ulusal yeterlilik
-    if has_any(text, [
-        "ulusal yeterlilik",
-        "yeterlilik daire",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["ulusal yeterlilik", "yeterlilik daire"],
+        "items": [
             ("SP-REG-01", "Regülasyon Tasarımı"),
             ("SP-REG-02", "Mevzuat Analizi"),
             ("OF-SUR-04", "Standart Operasyon Prosedürü"),
             ("DA-DAT-05", "Veri Kalitesi"),
             ("SP-PAY-01", "Paydaş Yönetimi"),
-        ])
-
-    # 18. MYK - sektör komiteleri
-    if has_any(text, [
-        "sektor komiteleri",
-        "sektör komiteleri",
-        "sektor komitesi",
-        "sektör komitesi",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["sektor komiteleri", "sektör komiteleri", "sektor komitesi", "sektör komitesi"],
+        "items": [
             ("SP-PAY-01", "Paydaş Yönetimi"),
             ("SP-PAY-05", "Sosyal Diyalog"),
             ("SP-REG-01", "Regülasyon Tasarımı"),
             ("OF-SUR-04", "Standart Operasyon Prosedürü"),
             ("DB-SOS-05", "İşbirliği"),
-        ])
-
-    # 19. Basın / halkla ilişkiler
-    if has_any(text, [
-        "basin ve halkla iliskiler",
-        "basın ve halkla ilişkiler",
-        "basin musavirligi",
-        "basın müşavirliği",
-        "halkla iliskiler",
-        "halkla ilişkiler",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["basin ve halkla iliskiler", "basın ve halkla ilişkiler", "basin musavirligi", "basın müşavirliği", "halkla iliskiler", "halkla ilişkiler"],
+        "items": [
             ("SP-PAY-04", "Kamu İletişimi"),
             ("SP-PAY-07", "Kriz İletişimi"),
             ("SP-PAY-08", "İtibar Yönetimi"),
             ("DB-SOS-07", "Dinleme"),
             ("LY-KAR-06", "Politik Duyarlılık"),
-        ])
-
-    # 20. Sosyal güvenlik / SGK
-    if has_any(text, [
-        "sosyal guvenlik kurumu",
-        "sosyal güvenlik kurumu",
-        "emeklilik hizmetleri",
-        "genel saglik sigortasi",
-        "genel sağlık sigortası",
-        "sigorta prim",
-        "aktüerya",
-        "aktuerya",
-    ]) or "SGK" in uid_text:
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["sosyal guvenlik kurumu", "sosyal güvenlik kurumu", "emeklilik hizmetleri", "genel saglik sigortasi", "genel sağlık sigortası", "sigorta prim", "aktuerya", "aktüerya"],
+        "items": [
             ("KY-SGK-01", "Sosyal Güvenlik Sistemi"),
             ("KY-SGK-02", "Aktüeryal Analiz"),
             ("KY-FIN-04", "Mali Analiz"),
             ("DA-DAT-01", "Veri Analitiği"),
             ("OF-DEN-02", "Risk Bazlı Denetim"),
-        ])
-
-    # 21. İŞKUR / istihdam
-    if has_any(text, [
-        "turkiye is kurumu",
-        "türkiye iş kurumu",
-        "iskur",
-        "işkur",
-        "aktif isgucu",
-        "aktif işgücü",
-        "is ve meslek danismanligi",
-        "iş ve meslek danışmanlığı",
-        "issizlik sigortasi",
-        "işsizlik sigortası",
-        "istihdam hizmetleri",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["turkiye is kurumu", "türkiye iş kurumu", "iskur", "işkur", "aktif isgucu", "aktif işgücü", "is ve meslek danismanligi", "iş ve meslek danışmanlığı", "issizlik sigortasi", "işsizlik sigortası", "istihdam hizmetleri"],
+        "items": [
             ("SP-POL-01", "Politika Geliştirme"),
             ("KY-HRK-05", "Yetenek Yönetimi"),
             ("OF-HIZ-01", "Hizmet Tasarımı"),
             ("DA-DAT-08", "Analitik Karar Destek"),
             ("SP-PAY-05", "Sosyal Diyalog"),
-        ])
-
-    # 22. Özel kalem
-    if has_any(text, [
-        "ozel kalem",
-        "özel kalem",
-    ]):
-        return make_competencies([
+        ],
+    },
+    {
+        "phrases": ["ozel kalem", "özel kalem"],
+        "items": [
             ("SP-PAY-02", "Kurumsal Koordinasyon"),
             ("LY-KAR-01", "Karar Alma"),
             ("OF-SUR-07", "İş Sürekliliği"),
             ("DB-SOS-07", "Dinleme"),
             ("DB-ETK-05", "Gizlilik Bilinci"),
-        ])
-
-    # 23. Genel/kopya set varsa aynısını göstermesin
-    if generic:
-        return make_competencies([
-            ("LY-STR-01", "Stratejik Liderlik"),
-            ("SP-PLN-01", "Stratejik Planlama"),
-            ("OF-SUR-01", "Süreç Yönetimi"),
-            ("SP-PAY-01", "Paydaş Yönetimi"),
-            ("DB-COG-01", "Analitik Düşünme"),
-        ])
-
-    return excel_competencies
+        ],
+    },
+]
 
 
-def get_competencies_for_uid(uid, position_name=""):
+def hydrate_items(items):
+    hydrated = []
+
+    for code, fallback_name in items:
+        code = clean_value(code).upper()
+        name = master_lookup.get(code, fallback_name)
+        hydrated.append({"code": code, "name": name})
+
+    return hydrated
+
+
+def rule_based_competencies(position_name, unit_name, uid):
+    text = normalize_text(f"{position_name} {unit_name} {uid}")
+
+    for rule in SPECIFIC_RULES:
+        if has_any(text, rule["phrases"]):
+            return hydrate_items(rule["items"])
+
+    return []
+
+
+def semantic_competencies_from_master(position_name, unit_name, uid):
+    if not master_rows:
+        return []
+
+    text = normalize_text(f"{position_name} {unit_name} {uid}")
+
+    tokens = [
+        t for t in re.split(r"[^a-z0-9çğıöşü]+", text)
+        if len(t) >= 4
+    ]
+
+    stop_tokens = {
+        "genel",
+        "mudurlugu",
+        "müdürlüğü",
+        "daire",
+        "baskanligi",
+        "başkanlığı",
+        "sube",
+        "şube",
+        "kurumu",
+        "birimi",
+        "hizmetleri",
+        "bakanligi",
+        "bakanlığı",
+        "csgb",
+        "çsgb",
+    }
+
+    tokens = [t for t in tokens if t not in stop_tokens]
+
+    scored = []
+
+    for row in master_rows:
+        search_text = row["search_text"]
+        score = 0
+
+        for token in tokens:
+            if token in search_text:
+                score += 2
+
+        if row["code"].startswith("LY-") and any(x in text for x in ["genel mudurlugu", "genel müdürlüğü", "baskanligi", "başkanlığı"]):
+            score += 1
+
+        if score > 0:
+            scored.append((score, row["code"], row["name"]))
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    result = []
+    seen = set()
+
+    for _, code, name in scored:
+        if code in seen:
+            continue
+
+        seen.add(code)
+        result.append({"code": code, "name": name})
+
+        if len(result) == 5:
+            break
+
+    return result
+
+
+def fallback_general_competencies():
+    return hydrate_items([
+        ("LY-STR-01", "Stratejik Liderlik"),
+        ("SP-PLN-01", "Stratejik Planlama"),
+        ("OF-SUR-01", "Süreç Yönetimi"),
+        ("SP-PAY-01", "Paydaş Yönetimi"),
+        ("DB-COG-01", "Analitik Düşünme"),
+    ])
+
+
+def get_competencies_for_position(uid, position_name, unit_name):
     uid = clean_value(uid)
     excel_competencies = competency_map.get(uid, [])
 
-    return override_competencies_by_position(
-        position_name=position_name,
-        uid=uid,
-        excel_competencies=excel_competencies,
-    )
+    if excel_competencies and not is_repeated_or_generic_set(excel_competencies):
+        return excel_competencies
+
+    rule_comps = rule_based_competencies(position_name, unit_name, uid)
+
+    if rule_comps:
+        return rule_comps
+
+    semantic_comps = semantic_competencies_from_master(position_name, unit_name, uid)
+
+    if semantic_comps:
+        return semantic_comps
+
+    if excel_competencies:
+        return excel_competencies
+
+    return fallback_general_competencies()
 
 
 # =========================================================
@@ -1367,6 +1360,7 @@ if "selected_unit_name" in st.session_state and "selected_unit_uid" in st.sessio
         for _, row in unit_df.iterrows():
             position_name = clean_value(row.get(position_col, ""))
             uid = clean_value(row.get(uid_col, ""))
+            unit_name = clean_value(row.get(unit_col, ""))
 
             st.markdown(
                 f"""
@@ -1391,10 +1385,14 @@ if "selected_unit_name" in st.session_state and "selected_unit_uid" in st.sessio
                 st.session_state[toggle_key] = not st.session_state[toggle_key]
 
             if st.session_state[toggle_key]:
-                competencies = get_competencies_for_uid(uid, position_name)
+                competencies = get_competencies_for_position(
+                    uid=uid,
+                    position_name=position_name,
+                    unit_name=unit_name,
+                )
 
                 if not competencies:
-                    st.info("Bu UID için Excel’de yetkinlik bulunamadı.")
+                    st.info("Bu UID için yetkinlik bulunamadı.")
 
                 else:
                     for comp in competencies:
