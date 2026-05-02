@@ -645,12 +645,242 @@ def build_competency_map_from_excel(sheets_dict):
 competency_map, selected_competency_sheet = build_competency_map_from_excel(sheets)
 
 
-def get_competencies_for_uid(uid):
-    uid = clean_value(uid)
+# =========================================================
+# POZİSYON ADINA GÖRE YETKİNLİK DÜZELTME KATMANI
+# =========================================================
 
-    # Kritik: sadece birebir UID eşleşmesi.
-    # Prefix, benzer UID, ana birim mirası, fallback yok.
-    return competency_map.get(uid, [])
+def has_generic_repeated_set(comps):
+    codes = {clean_value(c.get("code", "")).upper() for c in comps}
+
+    generic_sets = [
+        {"KY-HRK-06", "SP-REG-01", "OF-SUR-04", "DA-DAT-05", "SP-PAY-01"},
+    ]
+
+    for gs in generic_sets:
+        if gs.issubset(codes):
+            return True
+
+    return False
+
+
+def override_competencies_by_position(position_name, uid, excel_competencies):
+    text = normalize_text(position_name)
+    uid_text = clean_value(uid).upper()
+
+    should_override = has_generic_repeated_set(excel_competencies)
+
+    # Hukuk / müşavirlik
+    if "hukuk" in text or "musavir" in text or "müşavir" in text:
+        return [
+            {"code": "KY-HUK-01", "name": "İdare Hukuku Okuryazarlığı"},
+            {"code": "KY-HUK-03", "name": "Hukuki Risk Analizi"},
+            {"code": "KY-HUK-05", "name": "Sözleşme Hukuku"},
+            {"code": "SP-REG-02", "name": "Mevzuat Analizi"},
+            {"code": "DB-ETK-03", "name": "Tarafsızlık"},
+        ]
+
+    # Bilgi teknolojileri / bilgi işlem / yazılım / sistem
+    if (
+        "bilgi islem" in text
+        or "bilgi işlem" in text
+        or "bilgi teknolojileri" in text
+        or "yazilim" in text
+        or "yazılım" in text
+        or "sistem" in text
+        or "veri" in text
+    ):
+        if "guvenlik" in text or "güvenlik" in text or "siber" in text:
+            return [
+                {"code": "DA-SBR-01", "name": "Siber Güvenlik Yönetimi"},
+                {"code": "DA-SBR-02", "name": "Bilgi Güvenliği Politikası"},
+                {"code": "DA-SBR-06", "name": "Siber Risk Analizi"},
+                {"code": "DA-SYS-01", "name": "Bilgi Sistemleri Yönetimi"},
+                {"code": "DB-ETK-05", "name": "Gizlilik Bilinci"},
+            ]
+
+        if "veri" in text or "raporlama" in text:
+            return [
+                {"code": "DA-DAT-01", "name": "Veri Analitiği"},
+                {"code": "DA-DAT-03", "name": "Veri Görselleştirme"},
+                {"code": "DA-DAT-05", "name": "Veri Yönetişimi"},
+                {"code": "DA-DAT-06", "name": "Veri Kalitesi"},
+                {"code": "DA-DAT-08", "name": "Analitik Karar Destek"},
+            ]
+
+        return [
+            {"code": "DA-SYS-01", "name": "Bilgi Sistemleri Yönetimi"},
+            {"code": "DA-DAT-01", "name": "Veri Analitiği"},
+            {"code": "DA-SBR-01", "name": "Siber Güvenlik Yönetimi"},
+            {"code": "DA-DTR-01", "name": "Dijital Dönüşüm Yönetimi"},
+            {"code": "OF-PRJ-01", "name": "Proje Yönetimi"},
+        ]
+
+    # Strateji / performans / kalite / bütçe
+    if "strateji" in text or "performans" in text or "kalite" in text:
+        return [
+            {"code": "SP-PLN-01", "name": "Stratejik Planlama"},
+            {"code": "LY-PRF-02", "name": "SBG Yönetimi"},
+            {"code": "KY-FIN-03", "name": "Performans Bazlı Bütçe"},
+            {"code": "OF-SUR-03", "name": "Süreç İyileştirme"},
+            {"code": "DA-DAT-03", "name": "Veri Görselleştirme"},
+        ]
+
+    if "butce" in text or "bütçe" in text or "muhasebe" in text or "mali" in text or "ic kontrol" in text or "iç kontrol" in text:
+        return [
+            {"code": "KY-FIN-01", "name": "Bütçe Yönetimi"},
+            {"code": "KY-FIN-03", "name": "Performans Bazlı Bütçe"},
+            {"code": "KY-FIN-04", "name": "Mali Analiz"},
+            {"code": "KY-FIN-05", "name": "İç Kontrol"},
+            {"code": "OF-DEN-02", "name": "Risk Bazlı Denetim"},
+        ]
+
+    # Denetim / teftiş / rehberlik
+    if "denetim" in text or "teftis" in text or "teftiş" in text or "rehberlik" in text:
+        return [
+            {"code": "OF-DEN-02", "name": "Risk Bazlı Denetim"},
+            {"code": "OF-DEN-03", "name": "Bulgulama"},
+            {"code": "OF-DEN-08", "name": "Denetim Raporlama"},
+            {"code": "KY-HUK-03", "name": "Hukuki Risk Analizi"},
+            {"code": "DB-ETK-03", "name": "Tarafsızlık"},
+        ]
+
+    # İnsan kaynakları / personel / atama / disiplin / özlük / eğitim
+    if (
+        "personel" in text
+        or "insan kaynaklari" in text
+        or "insan kaynakları" in text
+        or "atama" in text
+        or "kadro" in text
+        or "disiplin" in text
+        or "ozluk" in text
+        or "özlük" in text
+        or "egitim" in text
+        or "eğitim" in text
+    ):
+        return [
+            {"code": "KY-HRK-01", "name": "Kamu Personel Rejimi"},
+            {"code": "KY-HRK-02", "name": "Atama ve Kadro Yönetimi"},
+            {"code": "KY-HRK-06", "name": "Eğitim ve Gelişim"},
+            {"code": "KY-HRK-07", "name": "Disiplin Süreçleri"},
+            {"code": "DB-ETK-03", "name": "Tarafsızlık"},
+        ]
+
+    # İhale / satın alma / destek / taşınır / emlak / teknik hizmetler
+    if (
+        "ihale" in text
+        or "satinalma" in text
+        or "satın alma" in text
+        or "destek" in text
+        or "tasınır" in text
+        or "taşınır" in text
+        or "emlak" in text
+        or "teknik" in text
+        or "ulastirma" in text
+        or "ulaştırma" in text
+    ):
+        return [
+            {"code": "OF-IHL-01", "name": "İhale Yönetimi"},
+            {"code": "OF-IHL-02", "name": "Satın Alma Planlama"},
+            {"code": "OF-IHL-04", "name": "Sözleşme Yönetimi"},
+            {"code": "KY-FIN-01", "name": "Bütçe Yönetimi"},
+            {"code": "OF-SUR-01", "name": "Süreç Yönetimi"},
+        ]
+
+    # Uluslararası / dış ilişkiler / AB
+    if (
+        "uluslararasi" in text
+        or "uluslararası" in text
+        or "dis iliskiler" in text
+        or "dış ilişkiler" in text
+        or "avrupa birligi" in text
+        or "avrupa birliği" in text
+        or "yurtdisi" in text
+        or "yurtdışı" in text
+        or "anlasmalar" in text
+        or "anlaşmalar" in text
+    ):
+        return [
+            {"code": "KY-INT-01", "name": "AB Uyum Yönetimi"},
+            {"code": "KY-INT-02", "name": "Uluslararası Anlaşmalar"},
+            {"code": "KY-INT-03", "name": "Uluslararası Kuruluş İlişkileri"},
+            {"code": "KY-INT-06", "name": "Diplomatik Yazışma"},
+            {"code": "SP-PAY-06", "name": "Uluslararası Koordinasyon"},
+        ]
+
+    # İş sağlığı ve güvenliği
+    if "is sagligi" in text or "iş sağlığı" in text or "isg" in text or "isggm" in text or "guvenligi" in text or "güvenliği" in text:
+        return [
+            {"code": "KY-ISG-01", "name": "İSG Mevzuatı"},
+            {"code": "KY-ISG-02", "name": "Sektörel Risk Analizi"},
+            {"code": "KY-ISG-03", "name": "Piyasa Gözetim ve Denetim"},
+            {"code": "KY-ISG-05", "name": "İSG Veri Yönetimi"},
+            {"code": "SP-REG-01", "name": "Regülasyon Tasarımı"},
+        ]
+
+    # Sınav / belgelendirme / yeterlilik / standart
+    if (
+        "sinav" in text
+        or "sınav" in text
+        or "belgelendirme" in text
+        or "yeterlilik" in text
+        or "standart" in text
+        or "sektor komiteleri" in text
+        or "sektör komiteleri" in text
+    ):
+        return [
+            {"code": "KY-HRK-06", "name": "Eğitim ve Gelişim"},
+            {"code": "SP-REG-01", "name": "Regülasyon Tasarımı"},
+            {"code": "OF-SUR-04", "name": "Standart Operasyon Prosedürü"},
+            {"code": "DA-DAT-05", "name": "Veri Kalitesi"},
+            {"code": "SP-PAY-01", "name": "Paydaş Yönetimi"},
+        ]
+
+    # Basın / halkla ilişkiler
+    if "basin" in text or "basın" in text or "halkla iliskiler" in text or "halkla ilişkiler" in text:
+        return [
+            {"code": "SP-PAY-04", "name": "Kamu İletişimi"},
+            {"code": "SP-PAY-07", "name": "Kriz İletişimi"},
+            {"code": "SP-PAY-08", "name": "İtibar Yönetimi"},
+            {"code": "DB-SOS-07", "name": "Dinleme"},
+            {"code": "LY-KAR-06", "name": "Politik Duyarlılık"},
+        ]
+
+    # Sosyal güvenlik
+    if "sosyal guvenlik" in text or "sosyal güvenlik" in text or "sgk" in uid_text:
+        return [
+            {"code": "KY-SGK-01", "name": "Sosyal Güvenlik Sistemi"},
+            {"code": "KY-SGK-02", "name": "Aktüeryal Analiz"},
+            {"code": "KY-FIN-04", "name": "Mali Analiz"},
+            {"code": "DA-DAT-01", "name": "Veri Analitiği"},
+            {"code": "OF-DEN-02", "name": "Risk Bazlı Denetim"},
+        ]
+
+    # İŞKUR / istihdam
+    if "iskur" in text or "işkur" in text or "isgucu" in text or "işgücü" in text or "istihdam" in text or "issizlik" in text or "işsizlik" in text:
+        return [
+            {"code": "SP-POL-01", "name": "Politika Geliştirme"},
+            {"code": "KY-HRK-05", "name": "Yetenek Yönetimi"},
+            {"code": "OF-HIZ-01", "name": "Hizmet Tasarımı"},
+            {"code": "DA-DAT-08", "name": "Analitik Karar Destek"},
+            {"code": "SP-PAY-05", "name": "Sosyal Diyalog"},
+        ]
+
+    # Eğer Excel genel/kopya set değilse Excel'deki birebir UID setini kullan
+    if excel_competencies and not should_override:
+        return excel_competencies
+
+    return excel_competencies
+
+
+def get_competencies_for_uid(uid, position_name=""):
+    uid = clean_value(uid)
+    excel_competencies = competency_map.get(uid, [])
+
+    return override_competencies_by_position(
+        position_name=position_name,
+        uid=uid,
+        excel_competencies=excel_competencies,
+    )
 
 
 # =========================================================
@@ -935,7 +1165,7 @@ if "selected_unit_name" in st.session_state and "selected_unit_uid" in st.sessio
                 st.session_state[toggle_key] = not st.session_state[toggle_key]
 
             if st.session_state[toggle_key]:
-                competencies = get_competencies_for_uid(uid)
+                competencies = get_competencies_for_uid(uid, position_name)
 
                 if not competencies:
                     st.info("Bu UID için Excel’de yetkinlik bulunamadı.")
