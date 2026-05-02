@@ -3,14 +3,19 @@ import pandas as pd
 from pathlib import Path
 import re
 from collections import Counter
+from io import BytesIO
 
-st.set_page_config(page_title="ÇSGB Yetkinlik Haritası", layout="wide")
+st.set_page_config(
+    page_title="ÇSGB Yetkinlik Haritası",
+    layout="wide"
+)
 
 BASE_DIR = Path(__file__).parent
+DEFAULT_EXCEL_PATH = BASE_DIR / "data" / "csgb_yetkinlik.xlsx"
 
 
 # =========================================================
-# TEMEL FONKSİYONLAR
+# TEMEL YARDIMCI FONKSİYONLAR
 # =========================================================
 
 def normalize_text(x):
@@ -42,29 +47,6 @@ def is_competency_code(value):
     return bool(re.match(r"^[A-ZÇĞİÖŞÜ]{2,5}-[A-ZÇĞİÖŞÜ0-9]{2,8}-\d{2}$", text))
 
 
-def find_excel_file():
-    files = list(BASE_DIR.glob("*.xlsx"))
-
-    if not files:
-        return None
-
-    priority_words = [
-        "çalışma",
-        "csgb",
-        "çsgb",
-        "kodlama",
-        "yetkinlik",
-        "matrisi",
-    ]
-
-    for file in files:
-        filename = normalize_text(file.name)
-        if any(normalize_text(w) in filename for w in priority_words):
-            return file
-
-    return files[0]
-
-
 def find_col(df, candidates, exact=False, forbidden=None):
     forbidden = [normalize_text(x) for x in (forbidden or [])]
     candidates_norm = [normalize_text(c) for c in candidates]
@@ -92,12 +74,30 @@ def find_col(df, candidates, exact=False, forbidden=None):
     return None
 
 
-def make_competencies(items):
-    return [{"code": code, "name": name} for code, name in items]
+def find_excel_file():
+    if DEFAULT_EXCEL_PATH.exists():
+        return DEFAULT_EXCEL_PATH
 
+    files = list(BASE_DIR.glob("*.xlsx")) + list((BASE_DIR / "data").glob("*.xlsx")) if (BASE_DIR / "data").exists() else list(BASE_DIR.glob("*.xlsx"))
 
-def has_any(text, phrases):
-    return any(normalize_text(p) in text for p in phrases)
+    if not files:
+        return None
+
+    priority_words = [
+        "csgb",
+        "çsgb",
+        "kodlama",
+        "yetkinlik",
+        "matrisi",
+        "çalışma",
+    ]
+
+    for file in files:
+        name = normalize_text(file.name)
+        if any(normalize_text(w) in name for w in priority_words):
+            return file
+
+    return files[0]
 
 
 # =========================================================
@@ -107,7 +107,7 @@ def has_any(text, phrases):
 EXCEL_FILE = find_excel_file()
 
 if EXCEL_FILE is None:
-    st.error("Excel dosyası bulunamadı. Excel dosyasını app.py ile aynı klasöre koy.")
+    st.error("Excel dosyası bulunamadı. Dosyayı data/csgb_yetkinlik.xlsx olarak koyun.")
     st.stop()
 
 
@@ -156,7 +156,7 @@ def read_all_sheets(path):
                     score += 20
                 if "yetkinlik" in cols:
                     score += 15
-                if "ÇSGB-" in sample or "CSGB-" in sample or "ÇSGK-" in sample:
+                if "ÇSGB-" in sample or "CSGB-" in sample or "ÇSGK-" in sample or "CSGK-" in sample:
                     score += 20
 
                 if score > best_score:
@@ -184,7 +184,7 @@ if not sheets:
 
 
 # =========================================================
-# ÇSGB KODLAMA SAYFASI
+# ORGANİZASYON SAYFASINI BUL
 # =========================================================
 
 def looks_like_org_sheet(df):
@@ -318,7 +318,7 @@ if uid_col is None or unit_col is None or position_col is None:
 
 
 # =========================================================
-# ORGANİZASYON VERİSİ
+# ORGANİZASYON VERİSİNİ TEMİZLE
 # =========================================================
 
 org_df = org_raw_df.copy()
@@ -344,16 +344,17 @@ org_df = org_df[
     & (org_df[position_col] != "")
 ].copy()
 
-org_df = org_df.drop_duplicates(subset=[uid_col]).reset_index(drop=True)
+org_duplicate_uids = org_df[org_df.duplicated(subset=[uid_col], keep=False)].copy()
+
+org_df = org_df.drop_duplicates(subset=[uid_col], keep="first").reset_index(drop=True)
 
 
 # =========================================================
-# MASTER YETKİNLİK LİSTESİ
+# MASTER YETKİNLİK LISTESI: SADECE KOD -> AD
 # =========================================================
 
-def build_master_competency_data(sheets_dict):
+def build_master_lookup(sheets_dict):
     lookup = {}
-    rows = []
 
     for sheet_name, payload in sheets_dict.items():
         df = payload["df"]
@@ -387,32 +388,17 @@ def build_master_competency_data(sheets_dict):
             code = clean_value(row.get(code_col, "")).upper()
             name = clean_value(row.get(name_col, ""))
 
-            if not is_competency_code(code) or not name:
-                continue
+            if is_competency_code(code) and name:
+                lookup[code] = name
 
-            lookup[code] = name
-
-            search_text_parts = [code, name]
-
-            for c in df.columns:
-                val = clean_value(row.get(c, ""))
-                if val and c not in [code_col, name_col]:
-                    search_text_parts.append(val)
-
-            rows.append({
-                "code": code,
-                "name": name,
-                "search_text": normalize_text(" ".join(search_text_parts)),
-            })
-
-    return lookup, rows
+    return lookup
 
 
-master_lookup, master_rows = build_master_competency_data(sheets)
+master_lookup = build_master_lookup(sheets)
 
 
 # =========================================================
-# YETKİNLİK MATRİSİ OKUMA
+# YETKİNLİK MATRİSİ SAYFASINI BUL
 # =========================================================
 
 def find_uid_col_for_comp_sheet(df):
@@ -556,7 +542,7 @@ def choose_primary_competency_sheet(sheets_dict):
             if normalize_text(sheet_name) == normalize_text(preferred):
                 df = payload["df"]
                 if is_valid_competency_matrix(sheet_name, df):
-                    return sheet_name, df
+                    return sheet_name, df, payload["header"]
 
     candidates = []
 
@@ -580,34 +566,41 @@ def choose_primary_competency_sheet(sheets_dict):
         if "agirlik" in cols or "ağırlık" in cols:
             score += 10
 
-        candidates.append((score, sheet_name, df))
+        candidates.append((score, sheet_name, df, payload["header"]))
 
     if not candidates:
-        return None, None
+        return None, None, None
 
     candidates.sort(reverse=True, key=lambda x: x[0])
-    return candidates[0][1], candidates[0][2]
+    return candidates[0][1], candidates[0][2], candidates[0][3]
 
 
-def build_competency_map_from_excel(sheets_dict):
+comp_sheet, comp_raw_df, comp_header = choose_primary_competency_sheet(sheets)
+
+if comp_raw_df is None or comp_raw_df.empty:
+    comp_raw_df = pd.DataFrame()
+
+
+# =========================================================
+# YETKİNLİK MAP OLUŞTUR
+# =========================================================
+
+def build_competency_map(df):
     comp_map = {}
+    raw_rows = []
 
-    selected_sheet, df = choose_primary_competency_sheet(sheets_dict)
-
-    if df is None:
-        return comp_map, None
+    if df is None or df.empty:
+        return comp_map, pd.DataFrame(), None, []
 
     uid_candidate = find_uid_col_for_comp_sheet(df)
     comp_cols = find_competency_columns(df)
 
     if uid_candidate is None or not comp_cols:
-        return comp_map, selected_sheet
+        return comp_map, pd.DataFrame(), uid_candidate, comp_cols
 
     temp = df.copy()
     temp[uid_candidate] = temp[uid_candidate].apply(clean_value)
-
     temp = temp[temp[uid_candidate].apply(is_position_uid)].copy()
-    temp = temp.drop_duplicates(subset=[uid_candidate], keep="first")
 
     for _, row in temp.iterrows():
         uid = clean_value(row.get(uid_candidate, ""))
@@ -615,10 +608,10 @@ def build_competency_map_from_excel(sheets_dict):
         if not uid:
             continue
 
-        comp_map[uid] = []
+        competencies = []
         seen = set()
 
-        for name_col, code_col in comp_cols:
+        for idx, (name_col, code_col) in enumerate(comp_cols, start=1):
             raw_name = row.get(name_col, "") if name_col else ""
             raw_code = row.get(code_col, "") if code_col else ""
 
@@ -657,21 +650,34 @@ def build_competency_map_from_excel(sheets_dict):
 
             seen.add(key)
 
-            comp_map[uid].append(
+            competencies.append(
                 {
                     "code": comp_code,
                     "name": comp_name,
                 }
             )
 
-    return comp_map, selected_sheet
+        raw_rows.append(
+            {
+                "UID": uid,
+                "Yetkinlik Sayısı": len(competencies),
+                "Yetkinlik Seti": " | ".join([c["code"] for c in competencies]),
+            }
+        )
+
+        if uid not in comp_map:
+            comp_map[uid] = competencies
+
+    raw_df = pd.DataFrame(raw_rows)
+
+    return comp_map, raw_df, uid_candidate, comp_cols
 
 
-competency_map, selected_competency_sheet = build_competency_map_from_excel(sheets)
+competency_map, comp_raw_summary_df, comp_uid_col, comp_cols = build_competency_map(comp_raw_df)
 
 
 # =========================================================
-# TEKRAR EDEN / KOPYA SET TESPİTİ
+# CROSSCHECK / KALİTE KONTROL
 # =========================================================
 
 def comp_signature(comps):
@@ -691,415 +697,153 @@ for uid, comps in competency_map.items():
         signature_counter[sig] += 1
 
 
-def is_repeated_or_generic_set(comps):
+def get_repeated_set_warning(uid):
+    comps = competency_map.get(uid, [])
     sig = comp_signature(comps)
 
-    if not sig:
-        return False
+    if not comps:
+        return "Bu UID için yetkinlik matrisi içinde yetkinlik bulunamadı."
 
-    if signature_counter.get(sig, 0) >= 4:
-        return True
+    repeat_count = signature_counter.get(sig, 0)
 
-    known_generic_sets = [
-        {"KY-HRK-06", "SP-REG-01", "OF-SUR-04", "DA-DAT-05", "SP-PAY-01"},
-        {"SP-POL-01", "SP-POL-02", "KY-HRK-08", "SP-PAY-05", "DA-DAT-01"},
-        {"KY-INT-01", "KY-INT-02", "KY-INT-03", "KY-INT-06", "SP-PAY-06"},
-    ]
+    if repeat_count >= 4:
+        return f"Bu yetkinlik seti {repeat_count} farklı UID’de aynı şekilde tekrar ediyor. Matris kopya/genel atama içerebilir."
 
-    codes = set(sig)
-
-    for gs in known_generic_sets:
-        if gs.issubset(codes):
-            return True
-
-    return False
+    return ""
 
 
-# =========================================================
-# POZİSYON BAZLI YETKİNLİK SEÇİMİ
-# =========================================================
+def build_quality_reports():
+    org_uids = set(org_df[uid_col].dropna().astype(str))
+    comp_uids = set(competency_map.keys())
 
-SPECIFIC_RULES = [
-    {
-        "phrases": ["anlasmalar daire", "anlaşmalar daire", "uluslararasi anlasmalar", "uluslararası anlaşmalar"],
-        "items": [
-            ("KY-INT-02", "Uluslararası Anlaşmalar"),
-            ("SP-REG-02", "Mevzuat Analizi"),
-            ("KY-HUK-05", "Sözleşme Hukuku"),
-            ("KY-INT-06", "Diplomatik Yazışma"),
-            ("SP-PAY-06", "Uluslararası Koordinasyon"),
-        ],
-    },
-    {
-        "phrases": ["avrupa birligi mali", "avrupa birliği mali", "ab mali yardim", "ab mali yardım", "avrupa birligi ve mali yardimlar"],
-        "items": [
-            ("KY-INT-01", "AB Uyum Yönetimi"),
-            ("KY-INT-04", "AB Fon ve Mali Yardım Yönetimi"),
-            ("SP-REG-02", "Mevzuat Analizi"),
-            ("SP-PAY-06", "Uluslararası Koordinasyon"),
-            ("DA-DAT-05", "Veri Kalitesi"),
-        ],
-    },
-    {
-        "phrases": ["uluslararasi kurulus", "uluslararası kuruluş", "uluslararasi proje", "uluslararası proje", "kuruluslar ve projeler", "kuruluşlar ve projeler"],
-        "items": [
-            ("KY-INT-03", "Uluslararası Kuruluş İlişkileri"),
-            ("OF-PRJ-01", "Proje Yönetimi"),
-            ("SP-PAY-06", "Uluslararası Koordinasyon"),
-            ("KY-INT-06", "Diplomatik Yazışma"),
-            ("SP-PAY-01", "Paydaş Yönetimi"),
-        ],
-    },
-    {
-        "phrases": ["yurtdisi", "yurtdışı", "dis temsilcilik", "dış temsilcilik", "yurtdisi teskilat", "yurtdışı teşkilat"],
-        "items": [
-            ("KY-INT-06", "Diplomatik Yazışma"),
-            ("KY-INT-03", "Uluslararası Kuruluş İlişkileri"),
-            ("SP-PAY-06", "Uluslararası Koordinasyon"),
-            ("DB-SOS-07", "Dinleme"),
-            ("LY-KAR-06", "Politik Duyarlılık"),
-        ],
-    },
-    {
-        "phrases": ["dis iliskiler ve avrupa birligi genel mudurlugu", "dış ilişkiler ve avrupa birliği genel müdürlüğü"],
-        "items": [
-            ("LY-STR-01", "Stratejik Liderlik"),
-            ("SP-PAY-06", "Uluslararası Koordinasyon"),
-            ("KY-INT-01", "AB Uyum Yönetimi"),
-            ("KY-INT-03", "Uluslararası Kuruluş İlişkileri"),
-            ("SP-PLN-01", "Stratejik Planlama"),
-        ],
-    },
-    {
-        "phrases": ["calisma istatistik", "çalışma istatistik", "istatistikleri daire", "istatistik daire", "analiz ve raporlama"],
-        "items": [
-            ("DA-DAT-01", "Veri Analitiği"),
-            ("DA-DAT-03", "Veri Görselleştirme"),
-            ("DA-DAT-06", "Veri Kalitesi"),
-            ("SP-POL-03", "Etki Analizi"),
-            ("DA-DAT-08", "Analitik Karar Destek"),
-        ],
-    },
-    {
-        "phrases": ["sendika", "toplu is", "toplu iş", "grev", "lokavt", "sosyal diyalog"],
-        "items": [
-            ("KY-HRK-08", "Sendika ve Çalışma İlişkileri"),
-            ("SP-PAY-05", "Sosyal Diyalog"),
-            ("SP-POL-02", "Politika Analizi"),
-            ("KY-HUK-01", "İdare Hukuku Okuryazarlığı"),
-            ("DB-SOS-05", "İşbirliği"),
-        ],
-    },
-    {
-        "phrases": ["calisma mevzuat", "çalışma mevzuat", "istihdam politik", "calisma politika", "çalışma politika"],
-        "items": [
-            ("SP-POL-01", "Politika Geliştirme"),
-            ("SP-POL-02", "Politika Analizi"),
-            ("SP-REG-02", "Mevzuat Analizi"),
-            ("SP-PAY-05", "Sosyal Diyalog"),
-            ("DA-DAT-01", "Veri Analitiği"),
-        ],
-    },
-    {
-        "phrases": ["hukuk hizmetleri", "hukuk daire", "hukuk musavir", "hukuk müşavir", "dava", "icra"],
-        "items": [
-            ("KY-HUK-01", "İdare Hukuku Okuryazarlığı"),
-            ("KY-HUK-03", "Hukuki Risk Analizi"),
-            ("KY-HUK-05", "Sözleşme Hukuku"),
-            ("SP-REG-02", "Mevzuat Analizi"),
-            ("DB-ETK-03", "Tarafsızlık"),
-        ],
-    },
-    {
-        "phrases": ["bilgi teknolojileri", "bilgi islem", "bilgi işlem", "yazilim", "yazılım", "sistem gelistirme", "sistem geliştirme", "altyapi", "altyapı"],
-        "items": [
-            ("DA-SYS-01", "Bilgi Sistemleri Yönetimi"),
-            ("DA-SYS-03", "Yazılım Geliştirme Yönetimi"),
-            ("DA-SBR-01", "Siber Güvenlik Yönetimi"),
-            ("DA-DTR-01", "Dijital Dönüşüm Yönetimi"),
-            ("OF-PRJ-01", "Proje Yönetimi"),
-        ],
-    },
-    {
-        "phrases": ["bilgi guvenligi", "bilgi güvenliği", "siber", "erisim yetkisi", "erişim yetkisi"],
-        "items": [
-            ("DA-SBR-01", "Siber Güvenlik Yönetimi"),
-            ("DA-SBR-02", "Bilgi Güvenliği Politikası"),
-            ("DA-SBR-04", "Erişim Yetkisi Yönetimi"),
-            ("DA-SBR-06", "Siber Risk Analizi"),
-            ("DB-ETK-05", "Gizlilik Bilinci"),
-        ],
-    },
-    {
-        "phrases": ["veri analitigi", "veri analitiği", "veri yonetimi", "veri yönetimi", "veri ambar", "dashboard", "raporlama sistemi"],
-        "items": [
-            ("DA-DAT-01", "Veri Analitiği"),
-            ("DA-DAT-03", "Veri Görselleştirme"),
-            ("DA-DAT-05", "Veri Yönetişimi"),
-            ("DA-DAT-06", "Veri Kalitesi"),
-            ("DA-DAT-08", "Analitik Karar Destek"),
-        ],
-    },
-    {
-        "phrases": ["strateji gelistirme", "strateji geliştirme", "performans ve kalite", "stratejik plan", "performans program", "kalite yonetimi", "kalite yönetimi"],
-        "items": [
-            ("SP-PLN-01", "Stratejik Planlama"),
-            ("LY-PRF-02", "SBG Yönetimi"),
-            ("KY-FIN-03", "Performans Bazlı Bütçe"),
-            ("OF-SUR-03", "Süreç İyileştirme"),
-            ("DA-DAT-03", "Veri Görselleştirme"),
-        ],
-    },
-    {
-        "phrases": ["butce", "bütçe", "muhasebe", "mali hizmet", "mali analiz", "ic kontrol", "iç kontrol", "tahakkuk"],
-        "items": [
-            ("KY-FIN-01", "Bütçe Yönetimi"),
-            ("KY-FIN-03", "Performans Bazlı Bütçe"),
-            ("KY-FIN-04", "Mali Analiz"),
-            ("KY-FIN-05", "İç Kontrol"),
-            ("OF-DEN-02", "Risk Bazlı Denetim"),
-        ],
-    },
-    {
-        "phrases": ["ic denetim", "iç denetim", "rehberlik ve teftis", "rehberlik ve teftiş", "teftis baskanligi", "teftiş başkanlığı", "grup baskanligi", "grup başkanlığı"],
-        "items": [
-            ("OF-DEN-02", "Risk Bazlı Denetim"),
-            ("OF-DEN-03", "Bulgulama"),
-            ("OF-DEN-08", "Denetim Raporlama"),
-            ("KY-HUK-03", "Hukuki Risk Analizi"),
-            ("DB-ETK-03", "Tarafsızlık"),
-        ],
-    },
-    {
-        "phrases": ["personel dairesi", "personel sube", "personel şube", "atama ve kadro", "disiplin", "ozluk", "özlük", "insan kaynaklari", "insan kaynakları"],
-        "items": [
-            ("KY-HRK-01", "Kamu Personel Rejimi"),
-            ("KY-HRK-02", "Atama ve Kadro Yönetimi"),
-            ("KY-HRK-06", "Eğitim ve Gelişim"),
-            ("KY-HRK-07", "Disiplin Süreçleri"),
-            ("DB-ETK-03", "Tarafsızlık"),
-        ],
-    },
-    {
-        "phrases": ["egitim ve sinav", "eğitim ve sınav", "egitim sube", "eğitim şube", "egitim merkezi", "eğitim merkezi", "hizmet ici egitim", "hizmet içi eğitim"],
-        "items": [
-            ("KY-HRK-06", "Eğitim ve Gelişim"),
-            ("OF-SUR-04", "Standart Operasyon Prosedürü"),
-            ("DB-COG-06", "Öğrenme Çevikliği"),
-            ("SP-PAY-01", "Paydaş Yönetimi"),
-            ("DA-DAT-05", "Veri Kalitesi"),
-        ],
-    },
-    {
-        "phrases": ["ihale", "satinalma", "satın alma", "destek hizmetleri", "tasınır", "taşınır", "emlak", "teknik hizmet", "ulastirma", "ulaştırma", "evrak ve arsiv", "evrak ve arşiv"],
-        "items": [
-            ("OF-IHL-01", "İhale Yönetimi"),
-            ("OF-IHL-02", "Satın Alma Planlama"),
-            ("OF-IHL-04", "Sözleşme Yönetimi"),
-            ("KY-FIN-01", "Bütçe Yönetimi"),
-            ("OF-SUR-01", "Süreç Yönetimi"),
-        ],
-    },
-    {
-        "phrases": ["is sagligi ve guvenligi", "iş sağlığı ve güvenliği", "isg hizmetleri", "isggm", "piyasa gozetim", "piyasa gözetim", "sektorel risk", "sektörel risk", "yetkilendirme daire"],
-        "items": [
-            ("KY-ISG-01", "İSG Mevzuatı"),
-            ("KY-ISG-02", "Sektörel Risk Analizi"),
-            ("KY-ISG-03", "Piyasa Gözetim ve Denetim"),
-            ("KY-ISG-05", "İSG Veri Yönetimi"),
-            ("SP-REG-01", "Regülasyon Tasarımı"),
-        ],
-    },
-    {
-        "phrases": ["sinav ve belgelendirme", "sınav ve belgelendirme", "belgelendirme daire"],
-        "items": [
-            ("OF-SUR-04", "Standart Operasyon Prosedürü"),
-            ("DA-DAT-05", "Veri Kalitesi"),
-            ("SP-REG-01", "Regülasyon Tasarımı"),
-            ("SP-PAY-01", "Paydaş Yönetimi"),
-            ("DB-ETK-03", "Tarafsızlık"),
-        ],
-    },
-    {
-        "phrases": ["ulusal yeterlilik", "yeterlilik daire"],
-        "items": [
-            ("SP-REG-01", "Regülasyon Tasarımı"),
-            ("SP-REG-02", "Mevzuat Analizi"),
-            ("OF-SUR-04", "Standart Operasyon Prosedürü"),
-            ("DA-DAT-05", "Veri Kalitesi"),
-            ("SP-PAY-01", "Paydaş Yönetimi"),
-        ],
-    },
-    {
-        "phrases": ["sektor komiteleri", "sektör komiteleri", "sektor komitesi", "sektör komitesi"],
-        "items": [
-            ("SP-PAY-01", "Paydaş Yönetimi"),
-            ("SP-PAY-05", "Sosyal Diyalog"),
-            ("SP-REG-01", "Regülasyon Tasarımı"),
-            ("OF-SUR-04", "Standart Operasyon Prosedürü"),
-            ("DB-SOS-05", "İşbirliği"),
-        ],
-    },
-    {
-        "phrases": ["basin ve halkla iliskiler", "basın ve halkla ilişkiler", "basin musavirligi", "basın müşavirliği", "halkla iliskiler", "halkla ilişkiler"],
-        "items": [
-            ("SP-PAY-04", "Kamu İletişimi"),
-            ("SP-PAY-07", "Kriz İletişimi"),
-            ("SP-PAY-08", "İtibar Yönetimi"),
-            ("DB-SOS-07", "Dinleme"),
-            ("LY-KAR-06", "Politik Duyarlılık"),
-        ],
-    },
-    {
-        "phrases": ["sosyal guvenlik kurumu", "sosyal güvenlik kurumu", "emeklilik hizmetleri", "genel saglik sigortasi", "genel sağlık sigortası", "sigorta prim", "aktuerya", "aktüerya"],
-        "items": [
-            ("KY-SGK-01", "Sosyal Güvenlik Sistemi"),
-            ("KY-SGK-02", "Aktüeryal Analiz"),
-            ("KY-FIN-04", "Mali Analiz"),
-            ("DA-DAT-01", "Veri Analitiği"),
-            ("OF-DEN-02", "Risk Bazlı Denetim"),
-        ],
-    },
-    {
-        "phrases": ["turkiye is kurumu", "türkiye iş kurumu", "iskur", "işkur", "aktif isgucu", "aktif işgücü", "is ve meslek danismanligi", "iş ve meslek danışmanlığı", "issizlik sigortasi", "işsizlik sigortası", "istihdam hizmetleri"],
-        "items": [
-            ("SP-POL-01", "Politika Geliştirme"),
-            ("KY-HRK-05", "Yetenek Yönetimi"),
-            ("OF-HIZ-01", "Hizmet Tasarımı"),
-            ("DA-DAT-08", "Analitik Karar Destek"),
-            ("SP-PAY-05", "Sosyal Diyalog"),
-        ],
-    },
-    {
-        "phrases": ["ozel kalem", "özel kalem"],
-        "items": [
-            ("SP-PAY-02", "Kurumsal Koordinasyon"),
-            ("LY-KAR-01", "Karar Alma"),
-            ("OF-SUR-07", "İş Sürekliliği"),
-            ("DB-SOS-07", "Dinleme"),
-            ("DB-ETK-05", "Gizlilik Bilinci"),
-        ],
-    },
-]
+    org_without_comp = org_df[~org_df[uid_col].isin(comp_uids)][
+        [uid_col, unit_col, position_col]
+    ].copy()
+    org_without_comp.columns = ["UID", "Ana Birim / Kurum", "Pozisyon / Birim Adı"]
 
+    comp_without_org_uids = sorted(list(comp_uids - org_uids))
+    comp_without_org = pd.DataFrame({"UID": comp_without_org_uids})
 
-def hydrate_items(items):
-    hydrated = []
+    repeated_rows = []
 
-    for code, fallback_name in items:
-        code = clean_value(code).upper()
-        name = master_lookup.get(code, fallback_name)
-        hydrated.append({"code": code, "name": name})
+    for sig, count in signature_counter.items():
+        if count >= 4:
+            affected = [
+                uid
+                for uid, comps in competency_map.items()
+                if comp_signature(comps) == sig
+            ]
 
-    return hydrated
+            for uid in affected:
+                org_match = org_df[org_df[uid_col] == uid]
+                position_name = ""
+                unit_name = ""
 
+                if not org_match.empty:
+                    position_name = clean_value(org_match.iloc[0].get(position_col, ""))
+                    unit_name = clean_value(org_match.iloc[0].get(unit_col, ""))
 
-def rule_based_competencies(position_name, unit_name, uid):
-    text = normalize_text(f"{position_name} {unit_name} {uid}")
+                repeated_rows.append(
+                    {
+                        "UID": uid,
+                        "Ana Birim / Kurum": unit_name,
+                        "Pozisyon / Birim Adı": position_name,
+                        "Tekrar Sayısı": count,
+                        "Yetkinlik Seti": " | ".join(sig),
+                    }
+                )
 
-    for rule in SPECIFIC_RULES:
-        if has_any(text, rule["phrases"]):
-            return hydrate_items(rule["items"])
+    repeated_sets = pd.DataFrame(repeated_rows)
 
-    return []
+    competency_counts = []
 
+    for uid in sorted(org_uids):
+        comps = competency_map.get(uid, [])
+        org_match = org_df[org_df[uid_col] == uid]
+        position_name = ""
+        unit_name = ""
 
-def semantic_competencies_from_master(position_name, unit_name, uid):
-    if not master_rows:
-        return []
+        if not org_match.empty:
+            position_name = clean_value(org_match.iloc[0].get(position_col, ""))
+            unit_name = clean_value(org_match.iloc[0].get(unit_col, ""))
 
-    text = normalize_text(f"{position_name} {unit_name} {uid}")
+        competency_counts.append(
+            {
+                "UID": uid,
+                "Ana Birim / Kurum": unit_name,
+                "Pozisyon / Birim Adı": position_name,
+                "Yetkinlik Sayısı": len(comps),
+            }
+        )
 
-    tokens = [
-        t for t in re.split(r"[^a-z0-9çğıöşü]+", text)
-        if len(t) >= 4
-    ]
+    competency_counts_df = pd.DataFrame(competency_counts)
 
-    stop_tokens = {
-        "genel",
-        "mudurlugu",
-        "müdürlüğü",
-        "daire",
-        "baskanligi",
-        "başkanlığı",
-        "sube",
-        "şube",
-        "kurumu",
-        "birimi",
-        "hizmetleri",
-        "bakanligi",
-        "bakanlığı",
-        "csgb",
-        "çsgb",
+    master_missing_rows = []
+
+    for uid, comps in competency_map.items():
+        org_match = org_df[org_df[uid_col] == uid]
+        position_name = ""
+
+        if not org_match.empty:
+            position_name = clean_value(org_match.iloc[0].get(position_col, ""))
+
+        for comp in comps:
+            code = clean_value(comp.get("code", "")).upper()
+            name = clean_value(comp.get("name", ""))
+
+            if code and code not in master_lookup:
+                master_missing_rows.append(
+                    {
+                        "UID": uid,
+                        "Pozisyon / Birim Adı": position_name,
+                        "Yetkinlik Kodu": code,
+                        "Yetkinlik Adı": name,
+                        "Sorun": "Kod MASTER_YETKINLIK_LISTESI içinde bulunamadı",
+                    }
+                )
+
+    master_missing = pd.DataFrame(master_missing_rows)
+
+    duplicate_org = pd.DataFrame()
+
+    if not org_duplicate_uids.empty:
+        duplicate_org = org_duplicate_uids[[uid_col, unit_col, position_col]].copy()
+        duplicate_org.columns = ["UID", "Ana Birim / Kurum", "Pozisyon / Birim Adı"]
+
+    return {
+        "Organizasyonda Var Yetkinlikte Yok": org_without_comp,
+        "Yetkinlikte Var Organizasyonda Yok": comp_without_org,
+        "Tekrar Eden Yetkinlik Setleri": repeated_sets,
+        "UID Yetkinlik Sayıları": competency_counts_df,
+        "Master Listede Olmayan Kodlar": master_missing,
+        "Organizasyonda Tekrarlı UID": duplicate_org,
     }
 
-    tokens = [t for t in tokens if t not in stop_tokens]
 
-    scored = []
-
-    for row in master_rows:
-        search_text = row["search_text"]
-        score = 0
-
-        for token in tokens:
-            if token in search_text:
-                score += 2
-
-        if row["code"].startswith("LY-") and any(x in text for x in ["genel mudurlugu", "genel müdürlüğü", "baskanligi", "başkanlığı"]):
-            score += 1
-
-        if score > 0:
-            scored.append((score, row["code"], row["name"]))
-
-    scored.sort(reverse=True, key=lambda x: x[0])
-
-    result = []
-    seen = set()
-
-    for _, code, name in scored:
-        if code in seen:
-            continue
-
-        seen.add(code)
-        result.append({"code": code, "name": name})
-
-        if len(result) == 5:
-            break
-
-    return result
+quality_reports = build_quality_reports()
 
 
-def fallback_general_competencies():
-    return hydrate_items([
-        ("LY-STR-01", "Stratejik Liderlik"),
-        ("SP-PLN-01", "Stratejik Planlama"),
-        ("OF-SUR-01", "Süreç Yönetimi"),
-        ("SP-PAY-01", "Paydaş Yönetimi"),
-        ("DB-COG-01", "Analitik Düşünme"),
-    ])
+def quality_reports_to_excel(reports):
+    output = BytesIO()
 
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for sheet_name, df in reports.items():
+            safe_name = sheet_name[:31]
+            if df is None or df.empty:
+                pd.DataFrame({"Sonuç": ["Kayıt yok"]}).to_excel(
+                    writer,
+                    sheet_name=safe_name,
+                    index=False,
+                )
+            else:
+                df.to_excel(
+                    writer,
+                    sheet_name=safe_name,
+                    index=False,
+                )
 
-def get_competencies_for_position(uid, position_name, unit_name):
-    uid = clean_value(uid)
-    excel_competencies = competency_map.get(uid, [])
-
-    if excel_competencies and not is_repeated_or_generic_set(excel_competencies):
-        return excel_competencies
-
-    rule_comps = rule_based_competencies(position_name, unit_name, uid)
-
-    if rule_comps:
-        return rule_comps
-
-    semantic_comps = semantic_competencies_from_master(position_name, unit_name, uid)
-
-    if semantic_comps:
-        return semantic_comps
-
-    if excel_competencies:
-        return excel_competencies
-
-    return fallback_general_competencies()
+    output.seek(0)
+    return output
 
 
 # =========================================================
@@ -1223,6 +967,11 @@ def get_rows_for_unit(unit_uid, unit_name):
     rows = rows.sort_values("_sort").drop(columns=["_sort"])
 
     return rows
+
+
+def get_competencies_for_uid(uid):
+    uid = clean_value(uid)
+    return competency_map.get(uid, [])
 
 
 # =========================================================
@@ -1360,7 +1109,6 @@ if "selected_unit_name" in st.session_state and "selected_unit_uid" in st.sessio
         for _, row in unit_df.iterrows():
             position_name = clean_value(row.get(position_col, ""))
             uid = clean_value(row.get(uid_col, ""))
-            unit_name = clean_value(row.get(unit_col, ""))
 
             st.markdown(
                 f"""
@@ -1385,14 +1133,15 @@ if "selected_unit_name" in st.session_state and "selected_unit_uid" in st.sessio
                 st.session_state[toggle_key] = not st.session_state[toggle_key]
 
             if st.session_state[toggle_key]:
-                competencies = get_competencies_for_position(
-                    uid=uid,
-                    position_name=position_name,
-                    unit_name=unit_name,
-                )
+                warning = get_repeated_set_warning(uid)
+
+                if warning:
+                    st.warning(warning)
+
+                competencies = get_competencies_for_uid(uid)
 
                 if not competencies:
-                    st.info("Bu UID için yetkinlik bulunamadı.")
+                    st.info("Bu UID için Excel’de yetkinlik bulunamadı.")
 
                 else:
                     for comp in competencies:
@@ -1411,3 +1160,36 @@ if "selected_unit_name" in st.session_state and "selected_unit_uid" in st.sessio
                             """,
                             unsafe_allow_html=True,
                         )
+
+
+# =========================================================
+# KALİTE KONTROL RAPORU
+# =========================================================
+
+st.divider()
+
+with st.expander("Yetkinlik Kalite Kontrol Raporu", expanded=False):
+    st.write("Bu bölüm uygulamanın yetkinlik tahmini yapmadan, Excel verisini kontrol etmesi için oluşturulmuştur.")
+
+    st.write("Okunan Excel:", EXCEL_FILE.name)
+    st.write("Organizasyon Sayfası:", org_sheet)
+    st.write("Yetkinlik Sayfası:", comp_sheet if comp_sheet else "Bulunamadı")
+    st.write("Organizasyon UID Sayısı:", len(org_df))
+    st.write("Yetkinlik UID Sayısı:", len(competency_map))
+
+    for report_name, report_df in quality_reports.items():
+        st.markdown(f"### {report_name}")
+
+        if report_df is None or report_df.empty:
+            st.success("Kayıt yok.")
+        else:
+            st.dataframe(report_df, use_container_width=True)
+
+    report_file = quality_reports_to_excel(quality_reports)
+
+    st.download_button(
+        label="Kalite Kontrol Raporunu Excel İndir",
+        data=report_file,
+        file_name="yetkinlik_kalite_kontrol_raporu.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
