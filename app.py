@@ -13,11 +13,13 @@ st.set_page_config(
 BASE_DIR = Path(__file__).parent
 DEFAULT_EXCEL_PATH = BASE_DIR / "data" / "csgb_yetkinlik.xlsx"
 
-GENERAL_ASSIGNMENT_REPEAT_LIMIT = 4
+# Aynı yetkinlik seti bu sayı veya daha fazla UID'de tekrar ederse sadece uyarı verir.
+# Yetkinlikleri gizlemez.
+REPEATED_SET_WARNING_LIMIT = 6
 
 
 # =========================================================
-# TEMEL YARDIMCI FONKSİYONLAR
+# TEMEL FONKSİYONLAR
 # =========================================================
 
 def normalize_text(x):
@@ -197,7 +199,7 @@ if not sheets:
 
 
 # =========================================================
-# ORGANİZASYON SAYFASINI BUL
+# ORGANİZASYON SAYFASI
 # =========================================================
 
 def looks_like_org_sheet(df):
@@ -331,7 +333,7 @@ if uid_col is None or unit_col is None or position_col is None:
 
 
 # =========================================================
-# ORGANİZASYON VERİSİNİ TEMİZLE
+# ORGANİZASYON VERİSİ
 # =========================================================
 
 org_df = org_raw_df.copy()
@@ -364,7 +366,7 @@ org_df = org_df.drop_duplicates(subset=[uid_col], keep="first").reset_index(drop
 
 # =========================================================
 # MASTER YETKİNLİK LİSTESİ
-# SADECE KOD -> AD TAMAMLAMA İÇİN
+# SADECE KOD -> AD TAMAMLAMA
 # =========================================================
 
 def build_master_lookup(sheets_dict):
@@ -412,7 +414,7 @@ master_lookup = build_master_lookup(sheets)
 
 
 # =========================================================
-# YETKİNLİK MATRİSİ SAYFASINI BUL
+# YETKİNLİK MATRİSİ
 # =========================================================
 
 def find_uid_col_for_comp_sheet(df):
@@ -595,10 +597,6 @@ if comp_raw_df is None or comp_raw_df.empty:
     comp_raw_df = pd.DataFrame()
 
 
-# =========================================================
-# YETKİNLİK MAP OLUŞTUR
-# =========================================================
-
 def build_competency_map(df):
     comp_map = {}
     raw_rows = []
@@ -691,7 +689,7 @@ competency_map, comp_raw_summary_df, comp_uid_col, comp_cols = build_competency_
 
 
 # =========================================================
-# GENEL/KOPYA ATAMA TESPİTİ
+# TEKRAR EDEN SET TESPİTİ
 # =========================================================
 
 def comp_signature(comps):
@@ -711,12 +709,7 @@ for uid, comps in competency_map.items():
         signature_counter[sig] += 1
 
 
-def is_general_assignment_uid(uid):
-    """
-    Aynı yetkinlik seti çok fazla UID'de tekrar ediyorsa,
-    bu UID genel/kopya atama kabul edilir.
-    Bu durumda ekranda yetkinlik gösterilmez.
-    """
+def is_repeated_set_uid(uid):
     uid = clean_value(uid)
     comps = competency_map.get(uid, [])
 
@@ -730,26 +723,26 @@ def is_general_assignment_uid(uid):
 
     repeat_count = signature_counter.get(sig, 0)
 
-    return repeat_count >= GENERAL_ASSIGNMENT_REPEAT_LIMIT
+    return repeat_count >= REPEATED_SET_WARNING_LIMIT
 
 
-def get_general_assignment_info(uid):
+def get_repeated_set_info(uid):
     uid = clean_value(uid)
     comps = competency_map.get(uid, [])
     sig = comp_signature(comps)
 
     if not comps:
         return {
-            "is_general": False,
+            "is_repeated": False,
             "message": "Bu UID için yetkinlik matrisi içinde yetkinlik bulunamadı.",
             "affected_df": pd.DataFrame(),
         }
 
     repeat_count = signature_counter.get(sig, 0)
 
-    if repeat_count < GENERAL_ASSIGNMENT_REPEAT_LIMIT:
+    if repeat_count < REPEATED_SET_WARNING_LIMIT:
         return {
-            "is_general": False,
+            "is_repeated": False,
             "message": "",
             "affected_df": pd.DataFrame(),
         }
@@ -767,21 +760,23 @@ def get_general_assignment_info(uid):
                 unit_name = clean_value(org_match.iloc[0].get(unit_col, ""))
                 position_name = clean_value(org_match.iloc[0].get(position_col, ""))
 
-            affected_rows.append({
-                "UID": other_uid,
-                "Ana Birim / Kurum": unit_name,
-                "Pozisyon / Birim Adı": position_name,
-                "Yetkinlik Seti": " | ".join(sig),
-            })
+            affected_rows.append(
+                {
+                    "UID": other_uid,
+                    "Ana Birim / Kurum": unit_name,
+                    "Pozisyon / Birim Adı": position_name,
+                    "Yetkinlik Seti": " | ".join(sig),
+                }
+            )
 
     affected_df = pd.DataFrame(affected_rows)
 
     return {
-        "is_general": True,
+        "is_repeated": True,
         "message": (
-            f"Bu UID için atanmış yetkinlik seti {repeat_count} farklı UID’de birebir aynı tekrar ediyor. "
-            f"Bu nedenle genel/kopya atama kabul edildi ve ekranda gösterilmedi. "
-            f"Lütfen Yetkinlik Matrisi’nde bu UID için özel yetkinlik ataması yapın."
+            f"Bu UID’nin yetkinlik seti {repeat_count} farklı UID’de birebir aynı görünüyor. "
+            f"Yetkinlikler Excel’deki UID satırından aynen gösterilmektedir. "
+            f"Bu kayıt kalite kontrol amacıyla işaretlenmiştir."
         ),
         "affected_df": affected_df,
     }
@@ -789,19 +784,15 @@ def get_general_assignment_info(uid):
 
 def get_competencies_for_uid(uid):
     """
-    Sadece UID'ye özel ve genel/kopya olmayan yetkinlikleri döndürür.
-    Genel/kopya atama tespit edilirse boş liste döndürür.
+    Yetkinlikleri sadece UID birebir eşleşmesiyle Excel'den döndürür.
+    Tekrar eden set olsa bile gizlemez.
     """
     uid = clean_value(uid)
-
-    if is_general_assignment_uid(uid):
-        return []
-
     return competency_map.get(uid, [])
 
 
 # =========================================================
-# CROSSCHECK / KALİTE KONTROL
+# KALİTE KONTROL RAPORLARI
 # =========================================================
 
 def build_quality_reports():
@@ -819,7 +810,7 @@ def build_quality_reports():
     repeated_rows = []
 
     for sig, count in signature_counter.items():
-        if count >= GENERAL_ASSIGNMENT_REPEAT_LIMIT:
+        if count >= REPEATED_SET_WARNING_LIMIT:
             affected = [
                 uid
                 for uid, comps in competency_map.items()
@@ -842,7 +833,7 @@ def build_quality_reports():
                         "Pozisyon / Birim Adı": position_name,
                         "Tekrar Sayısı": count,
                         "Yetkinlik Seti": " | ".join(sig),
-                        "Durum": "Genel/kopya atama - ekranda gösterilmez",
+                        "Durum": "Tekrar eden set - sadece kalite kontrol uyarısı",
                     }
                 )
 
@@ -866,7 +857,7 @@ def build_quality_reports():
                 "Ana Birim / Kurum": unit_name,
                 "Pozisyon / Birim Adı": position_name,
                 "Yetkinlik Sayısı": len(comps),
-                "Genel/Kopya Atama mı": "Evet" if is_general_assignment_uid(uid) else "Hayır",
+                "Tekrar Eden Set mi": "Evet" if is_repeated_set_uid(uid) else "Hayır",
             }
         )
 
@@ -907,7 +898,7 @@ def build_quality_reports():
     return {
         "Organizasyonda Var Yetkinlikte Yok": org_without_comp,
         "Yetkinlikte Var Organizasyonda Yok": comp_without_org,
-        "Genel Kopya Atamalar": repeated_sets,
+        "Tekrar Eden Yetkinlik Setleri": repeated_sets,
         "UID Yetkinlik Sayıları": competency_counts_df,
         "Master Listede Olmayan Kodlar": master_missing,
         "Organizasyonda Tekrarlı UID": duplicate_org,
@@ -1222,28 +1213,25 @@ if "selected_unit_name" in st.session_state and "selected_unit_uid" in st.sessio
                 st.session_state[toggle_key] = not st.session_state[toggle_key]
 
             if st.session_state[toggle_key]:
-                general_info = get_general_assignment_info(uid)
+                repeat_info = get_repeated_set_info(uid)
 
-                if general_info["message"]:
-                    if general_info["is_general"]:
-                        st.warning(general_info["message"])
+                if repeat_info["message"]:
+                    if repeat_info["is_repeated"]:
+                        st.warning(repeat_info["message"])
 
-                        if not general_info["affected_df"].empty:
-                            with st.expander("Aynı genel/kopya setin geçtiği UID’leri göster", expanded=False):
+                        if not repeat_info["affected_df"].empty:
+                            with st.expander("Aynı yetkinlik setinin geçtiği UID’leri göster", expanded=False):
                                 st.dataframe(
-                                    general_info["affected_df"],
+                                    repeat_info["affected_df"],
                                     use_container_width=True
                                 )
                     else:
-                        st.info(general_info["message"])
+                        st.info(repeat_info["message"])
 
                 competencies = get_competencies_for_uid(uid)
 
                 if not competencies:
-                    if general_info["is_general"]:
-                        st.info("Genel/kopya atama olduğu için yetkinlikler gösterilmedi.")
-                    else:
-                        st.info("Bu UID için Excel’de yetkinlik bulunamadı.")
+                    st.info("Bu UID için Excel’de yetkinlik bulunamadı.")
 
                 else:
                     for comp in competencies:
@@ -1278,7 +1266,7 @@ with st.expander("Yetkinlik Kalite Kontrol Raporu", expanded=False):
     st.write("Yetkinlik Sayfası:", comp_sheet if comp_sheet else "Bulunamadı")
     st.write("Organizasyon UID Sayısı:", len(org_df))
     st.write("Yetkinlik UID Sayısı:", len(competency_map))
-    st.write("Genel/kopya tekrar eşiği:", GENERAL_ASSIGNMENT_REPEAT_LIMIT)
+    st.write("Tekrar eden set uyarı eşiği:", REPEATED_SET_WARNING_LIMIT)
 
     for report_name, report_df in quality_reports.items():
         st.markdown(f"### {report_name}")
