@@ -9,7 +9,7 @@ BASE_DIR = Path(__file__).parent
 
 
 # =========================================================
-# Yardımcı Fonksiyonlar
+# TEMEL FONKSİYONLAR
 # =========================================================
 
 def normalize_text(x):
@@ -92,7 +92,7 @@ def find_col(df, candidates, exact=False, forbidden=None):
 
 
 # =========================================================
-# Excel Okuma
+# EXCEL OKUMA
 # =========================================================
 
 EXCEL_FILE = find_excel_file()
@@ -130,7 +130,7 @@ def read_all_sheets(path):
                 cols = " ".join(normalize_text(c) for c in temp.columns)
                 sample = " ".join(
                     temp.astype(str)
-                    .head(80)
+                    .head(100)
                     .fillna("")
                     .values
                     .flatten()
@@ -146,7 +146,7 @@ def read_all_sheets(path):
                 if "pozisyon" in cols:
                     score += 20
                 if "yetkinlik" in cols:
-                    score += 10
+                    score += 15
                 if "ÇSGB-" in sample or "CSGB-" in sample or "ÇSGK-" in sample:
                     score += 20
 
@@ -175,7 +175,7 @@ if not sheets:
 
 
 # =========================================================
-# ÇSGB Kodlama Sayfasını Bul
+# ÇSGB KODLAMA SAYFASI
 # =========================================================
 
 def looks_like_org_sheet(df):
@@ -229,19 +229,14 @@ def select_org_sheet(sheets_dict):
 
         if looks_like_org_sheet(df):
             score += 100
-
         if "kodlama" in sheet_norm:
             score += 40
-
         if "uid" in cols:
             score += 20
-
         if "ana birim" in cols:
             score += 20
-
         if "pozisyon" in cols:
             score += 20
-
         if "yetkinlik kodu" in cols and "ana birim" not in cols:
             score -= 100
 
@@ -262,7 +257,7 @@ if org_raw_df is None or org_raw_df.empty:
 
 
 # =========================================================
-# Organizasyon Kolonları
+# ORGANİZASYON KOLONLARI
 # =========================================================
 
 uid_col = find_col(org_raw_df, ["UID"], exact=True)
@@ -314,7 +309,7 @@ if uid_col is None or unit_col is None or position_col is None:
 
 
 # =========================================================
-# Organizasyon Verisini Temizle
+# ORGANİZASYON VERİSİ
 # =========================================================
 
 org_df = org_raw_df.copy()
@@ -344,7 +339,7 @@ org_df = org_df.drop_duplicates(subset=[uid_col]).reset_index(drop=True)
 
 
 # =========================================================
-# Master Yetkinlik Lookup
+# MASTER YETKİNLİK KOD -> AD LOOKUP
 # =========================================================
 
 def build_master_competency_lookup(sheets_dict):
@@ -355,9 +350,12 @@ def build_master_competency_lookup(sheets_dict):
         sheet_norm = normalize_text(sheet_name)
         cols_norm = " ".join(normalize_text(c) for c in df.columns)
 
-        if "master" not in sheet_norm and not (
-            "yetkinlik kodu" in cols_norm and "yetkinlik adi" in cols_norm
-        ):
+        is_master = "master" in sheet_norm
+        has_master_cols = "yetkinlik kodu" in cols_norm and (
+            "yetkinlik adi" in cols_norm or "yetkinlik adı" in cols_norm
+        )
+
+        if not is_master and not has_master_cols:
             continue
 
         code_col = find_col(
@@ -389,7 +387,7 @@ master_lookup = build_master_competency_lookup(sheets)
 
 
 # =========================================================
-# Yetkinlik Matrisi
+# YETKİNLİK MATRİSİ
 # =========================================================
 
 def find_uid_col_for_comp_sheet(df):
@@ -488,11 +486,14 @@ def split_competency_value(value):
     return text, ""
 
 
-def looks_like_competency_matrix(df, sheet_name):
+def is_valid_competency_matrix(sheet_name, df):
     sheet_norm = normalize_text(sheet_name)
     cols = " ".join(normalize_text(c) for c in df.columns)
 
     if "master" in sheet_norm:
+        return False
+
+    if "kodlama" in sheet_norm:
         return False
 
     if "yetkinlik" not in cols:
@@ -503,100 +504,157 @@ def looks_like_competency_matrix(df, sheet_name):
     if uid_candidate is None:
         return False
 
+    comp_cols = find_competency_columns(df)
+
+    if not comp_cols:
+        return False
+
     sample = df[uid_candidate].dropna().astype(str).head(300).tolist()
 
-    return any(is_position_uid(v) for v in sample)
+    if not any(is_position_uid(v) for v in sample):
+        return False
+
+    return True
+
+
+def choose_primary_competency_sheet(sheets_dict):
+    preferred_order = [
+        "Yetkinlik Matrisi v03",
+        "Yetkinlik Matrisi",
+        "Yetkinlik Matrisi v02",
+        "ÇSGB Yetkinlik Matrisi",
+        "CSGB Yetkinlik Matrisi",
+    ]
+
+    for preferred in preferred_order:
+        for sheet_name, payload in sheets_dict.items():
+            if normalize_text(sheet_name) == normalize_text(preferred):
+                df = payload["df"]
+                if is_valid_competency_matrix(sheet_name, df):
+                    return sheet_name, df
+
+    candidates = []
+
+    for sheet_name, payload in sheets_dict.items():
+        df = payload["df"]
+
+        if not is_valid_competency_matrix(sheet_name, df):
+            continue
+
+        cols = " ".join(normalize_text(c) for c in df.columns)
+        sheet_norm = normalize_text(sheet_name)
+
+        score = 0
+
+        if "yetkinlik matrisi" in sheet_norm:
+            score += 50
+        if "yetkinlik 1 kodu" in cols:
+            score += 30
+        if "yetkinlik 1 adi" in cols or "yetkinlik 1 adı" in cols:
+            score += 30
+        if "agirlik" in cols or "ağırlık" in cols:
+            score += 10
+
+        candidates.append((score, sheet_name, df))
+
+    if not candidates:
+        return None, None
+
+    candidates.sort(reverse=True, key=lambda x: x[0])
+    return candidates[0][1], candidates[0][2]
 
 
 def build_competency_map_from_excel(sheets_dict):
     comp_map = {}
 
-    for sheet_name, payload in sheets_dict.items():
-        df = payload["df"]
+    selected_sheet, df = choose_primary_competency_sheet(sheets_dict)
 
-        if not looks_like_competency_matrix(df, sheet_name):
+    if df is None:
+        return comp_map, None
+
+    uid_candidate = find_uid_col_for_comp_sheet(df)
+    comp_cols = find_competency_columns(df)
+
+    if uid_candidate is None or not comp_cols:
+        return comp_map, selected_sheet
+
+    temp = df.copy()
+    temp[uid_candidate] = temp[uid_candidate].apply(clean_value)
+
+    temp = temp[temp[uid_candidate].apply(is_position_uid)].copy()
+    temp = temp.drop_duplicates(subset=[uid_candidate], keep="first")
+
+    for _, row in temp.iterrows():
+        uid = clean_value(row.get(uid_candidate, ""))
+
+        if not uid:
             continue
 
-        uid_candidate = find_uid_col_for_comp_sheet(df)
-        comp_cols = find_competency_columns(df)
+        comp_map[uid] = []
+        seen = set()
 
-        if uid_candidate is None or not comp_cols:
-            continue
+        for name_col, code_col in comp_cols:
+            raw_name = row.get(name_col, "") if name_col else ""
+            raw_code = row.get(code_col, "") if code_col else ""
 
-        temp = df.copy()
-        temp[uid_candidate] = temp[uid_candidate].apply(clean_value)
-        temp = temp[temp[uid_candidate].apply(is_position_uid)].copy()
+            comp_name = clean_value(raw_name)
+            comp_code = clean_value(raw_code).upper()
 
-        for _, row in temp.iterrows():
-            uid = clean_value(row.get(uid_candidate, ""))
+            if comp_name:
+                parsed_name, parsed_code = split_competency_value(comp_name)
 
-            if not uid:
+                if parsed_code:
+                    comp_name = parsed_name
+                    comp_code = parsed_code
+
+            if comp_code:
+                parsed_name, parsed_code = split_competency_value(comp_code)
+
+                if parsed_code:
+                    comp_code = parsed_code
+
+                    if parsed_name and not comp_name:
+                        comp_name = parsed_name
+
+            if comp_code and not comp_name:
+                comp_name = master_lookup.get(comp_code, "")
+
+            if not comp_code and not comp_name:
                 continue
 
-            if uid not in comp_map:
-                comp_map[uid] = []
+            if is_position_uid(comp_name) or is_position_uid(comp_code):
+                continue
 
-            seen = {(x["code"], x["name"]) for x in comp_map[uid]}
+            key = (comp_code, comp_name)
 
-            for name_col, code_col in comp_cols:
-                raw_name = row.get(name_col, "") if name_col else ""
-                raw_code = row.get(code_col, "") if code_col else ""
+            if key in seen:
+                continue
 
-                comp_name = clean_value(raw_name)
-                comp_code = clean_value(raw_code).upper()
+            seen.add(key)
 
-                if comp_name:
-                    parsed_name, parsed_code = split_competency_value(comp_name)
+            comp_map[uid].append(
+                {
+                    "code": comp_code,
+                    "name": comp_name,
+                }
+            )
 
-                    if parsed_code:
-                        comp_name = parsed_name
-                        comp_code = parsed_code
-
-                if comp_code:
-                    parsed_name, parsed_code = split_competency_value(comp_code)
-
-                    if parsed_code:
-                        comp_code = parsed_code
-
-                        if parsed_name and not comp_name:
-                            comp_name = parsed_name
-
-                if comp_code and not comp_name:
-                    comp_name = master_lookup.get(comp_code, "")
-
-                if not comp_code and not comp_name:
-                    continue
-
-                if is_position_uid(comp_name) or is_position_uid(comp_code):
-                    continue
-
-                key = (comp_code, comp_name)
-
-                if key in seen:
-                    continue
-
-                seen.add(key)
-
-                comp_map[uid].append(
-                    {
-                        "code": comp_code,
-                        "name": comp_name,
-                    }
-                )
-
-    return comp_map
+    return comp_map, selected_sheet
 
 
-competency_map = build_competency_map_from_excel(sheets)
+competency_map, selected_competency_sheet = build_competency_map_from_excel(sheets)
 
 
 def get_competencies_for_uid(uid):
     uid = clean_value(uid)
+
+    # Kritik: sadece birebir UID eşleşmesi.
+    # Prefix, benzer UID, ana birim mirası, fallback yok.
     return competency_map.get(uid, [])
 
 
 # =========================================================
-# Organizasyon Gruplarını Excel'den Üret
+# ORGANİZASYON GRUPLARI
 # =========================================================
 
 def is_top_manager_row(row):
@@ -660,7 +718,7 @@ def group_title(group_code):
 
 
 # =========================================================
-# Birim Detayları
+# BİRİM DETAYLARI
 # =========================================================
 
 def get_rows_for_unit(unit_uid, unit_name):
@@ -783,7 +841,7 @@ st.markdown(
 
 
 # =========================================================
-# Başlık
+# BAŞLIK
 # =========================================================
 
 st.markdown(
@@ -798,7 +856,7 @@ st.markdown(
 
 
 # =========================================================
-# Organizasyon Şeması
+# ORGANİZASYON ŞEMASI
 # =========================================================
 
 if not ordered_groups:
@@ -834,7 +892,7 @@ for idx, group_code in enumerate(ordered_groups):
 
 
 # =========================================================
-# Seçilen Birim Detayı
+# SEÇİLEN BİRİM DETAYI
 # =========================================================
 
 if "selected_unit_name" in st.session_state and "selected_unit_uid" in st.session_state:
