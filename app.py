@@ -44,6 +44,7 @@ def normalize_text(x):
     text = text.translate(tr_map)
     text = text.lower()
     text = re.sub(r"\s+", " ", text)
+
     return text.strip()
 
 
@@ -365,10 +366,6 @@ def find_comp_uid_col(df):
 
 
 def find_competency_columns(df):
-    """
-    Sadece Yetkinlik 1-10 Ad/Kod sütunlarını yakalar.
-    Ağırlık, Seviye, Hedef, Ölçüm gibi yardımcı sütunları almaz.
-    """
     cols = [(normalize_text(c), c) for c in df.columns]
     result = []
 
@@ -639,6 +636,62 @@ def group_title(group_code):
     return str(group_code)
 
 
+# =========================================================
+# REHBERLİK VE TEFTİŞ İL GRUPLARINI FİLTRELE
+# =========================================================
+
+def is_rehberlik_teftis_unit(unit_uid, unit_name):
+    uid = normalize_uid(unit_uid)
+    name = normalize_text(unit_name)
+
+    return (
+        "rtb" in uid.lower()
+        or "rehberlik ve teftis" in name
+        or "rehberlik ve teftiş" in name
+    )
+
+
+def is_city_group_row(row):
+    text = normalize_text(
+        f"{row.get(position_col, '')} {row.get(unit_col, '')} {row.get(uid_col, '')}"
+    )
+
+    city_names = [
+        "ankara",
+        "istanbul",
+        "izmir",
+        "bursa",
+        "adana",
+        "antalya",
+        "konya",
+        "samsun",
+        "trabzon",
+        "erzurum",
+        "diyarbakir",
+        "gaziantep",
+        "kayseri",
+        "kocaeli",
+        "mersin",
+        "eskisehir",
+        "malatya",
+        "van",
+        "denizli",
+        "sakarya",
+    ]
+
+    if "grup baskanligi" in text:
+        return True
+
+    if "grup başkanlığı" in text:
+        return True
+
+    for city in city_names:
+        if city in text:
+            return True
+
+    return False
+
+
 def get_rows_for_unit(unit_uid, unit_name):
     unit_uid = normalize_uid(unit_uid)
     unit_name_norm = normalize_text(unit_name)
@@ -670,6 +723,9 @@ def get_rows_for_unit(unit_uid, unit_name):
 
     rows = rows[rows[uid_col].apply(is_position_uid)].copy()
     rows = rows.drop_duplicates(subset=[uid_col])
+
+    if is_rehberlik_teftis_unit(unit_uid, unit_name):
+        rows = rows[~rows.apply(is_city_group_row, axis=1)].copy()
 
     if rows.empty:
         return rows
@@ -876,20 +932,3 @@ if "selected_unit_name" in st.session_state and "selected_unit_uid" in st.sessio
                             """,
                             unsafe_allow_html=True
                         )
-
-
-# =========================================================
-# VERİ KAYNAĞI BİLGİSİ
-# =========================================================
-
-st.divider()
-
-with st.expander("Veri kaynağı bilgisi", expanded=False):
-    st.write("Okunan Excel:", EXCEL_FILE.name)
-    st.write("Organizasyon Sayfası:", org_sheet)
-    st.write("Yetkinlik Sayfası:", comp_sheet)
-    st.write("Master Sayfası:", master_sheet)
-    st.write("Organizasyon UID Sayısı:", len(org_df))
-    st.write("Yetkinlik UID Sayısı:", len(competency_map))
-    st.write("Yetkinlik Matrisi UID kolonu:", comp_uid_col)
-    st.write("Okunan Yetkinlik Ad/Kod Kolonları:", [(str(a), str(b)) for a, b in comp_cols])
