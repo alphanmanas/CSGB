@@ -29,22 +29,51 @@ REPEATED_SET_WARNING_LIMIT = 6
 # =========================================================
 
 def normalize_text(x):
+    """
+    Türkçe karakter, görünmeyen karakter, tırnak ve boşluk farklarını normalize eder.
+    Özellikle Excel sheet adlarında görülen Lİstesi / Listesi farkını çözer.
+    """
     if pd.isna(x):
         return ""
-    x = str(x).strip().lower()
-    tr_map = str.maketrans("çğıöşüİI", "cgiosuii")
-    x = x.translate(tr_map)
-    x = re.sub(r"\s+", " ", x)
-    return x
+
+    text = str(x).strip()
+
+    text = text.replace("\u00a0", " ")
+    text = text.replace("\u200b", "")
+    text = text.replace("\ufeff", "")
+    text = text.replace('"', "")
+    text = text.replace("'", "")
+
+    tr_map = str.maketrans({
+        "Ç": "c", "ç": "c",
+        "Ğ": "g", "ğ": "g",
+        "İ": "i", "I": "i", "ı": "i",
+        "Ö": "o", "ö": "o",
+        "Ş": "s", "ş": "s",
+        "Ü": "u", "ü": "u",
+    })
+
+    text = text.translate(tr_map)
+    text = text.lower()
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
 
 
 def clean_value(x):
     if pd.isna(x):
         return ""
+
     text = str(x).strip()
+
+    text = text.replace("\u00a0", " ")
+    text = text.replace("\u200b", "")
+    text = text.replace("\ufeff", "")
+
     if text.lower() in ["nan", "none", "null"]:
         return ""
-    return text
+
+    return text.strip()
 
 
 def is_position_uid(value):
@@ -54,7 +83,7 @@ def is_position_uid(value):
 
 def is_competency_code(value):
     text = clean_value(value).upper()
-    return bool(re.match(r"^[A-ZÇĞİÖŞÜ]{2,6}-[A-ZÇĞİÖŞÜ0-9]{2,10}-\d{2}$", text))
+    return bool(re.match(r"^[A-ZÇĞİÖŞÜ]{2,6}-[A-ZÇĞİÖŞÜ0-9]{2,12}-\d{2}$", text))
 
 
 def find_col(df, candidates, exact=False, forbidden=None):
@@ -93,11 +122,26 @@ def find_excel_file():
     files.extend(list(BASE_DIR.glob("*.xlsx")))
 
     data_dir = BASE_DIR / "data"
+
     if data_dir.exists():
         files.extend(list(data_dir.glob("*.xlsx")))
 
     if not files:
         return None
+
+    preferred_words = [
+        "csgb",
+        "çsgb",
+        "yetkinlik",
+        "kodlama",
+        "matrisi",
+        "çalışma",
+    ]
+
+    for file in files:
+        name = normalize_text(file.name)
+        if any(normalize_text(w) in name for w in preferred_words):
+            return file
 
     return files[0]
 
@@ -158,7 +202,12 @@ def read_all_sheets(path):
                     score += 20
                 if "yetkinlik" in cols:
                     score += 20
-                if "ÇSGB-" in sample or "CSGB-" in sample or "ÇSGK-" in sample or "CSGK-" in sample:
+                if (
+                    "ÇSGB-" in sample
+                    or "CSGB-" in sample
+                    or "ÇSGK-" in sample
+                    or "CSGK-" in sample
+                ):
                     score += 30
 
                 if score > best_score:
@@ -186,12 +235,15 @@ if not sheets:
 
 
 def get_sheet_exact(sheets_dict, target_name):
+    target_norm = normalize_text(target_name)
+
     for sheet_name, payload in sheets_dict.items():
-        if normalize_text(sheet_name) == normalize_text(target_name):
+        if normalize_text(sheet_name) == target_norm:
             return sheet_name, payload["df"], payload["header"]
 
     st.error(f"Excel içinde '{target_name}' sayfası bulunamadı.")
     st.write("Bulunan sayfalar:", list(sheets_dict.keys()))
+    st.write("Normalize edilen sayfalar:", [normalize_text(s) for s in sheets_dict.keys()])
     st.stop()
 
 
@@ -357,6 +409,9 @@ def find_competency_columns(df):
             f"yetkinlik{i} adi",
             f"yetkinlik{i} ad",
             f"yetkinlik{i} adı",
+            f"yetkinlik adi {i}",
+            f"yetkinlik adı {i}",
+            f"yetkinlik ad {i}",
         }
 
         code_candidates = {
@@ -364,6 +419,8 @@ def find_competency_columns(df):
             f"yetkinlik {i} kod",
             f"yetkinlik{i} kodu",
             f"yetkinlik{i} kod",
+            f"yetkinlik kodu {i}",
+            f"yetkinlik kod {i}",
         }
 
         single_candidates = {
@@ -400,7 +457,7 @@ def split_competency_value(value):
         return "", ""
 
     m = re.match(
-        r"^([A-ZÇĞİÖŞÜ]{2,6}-[A-ZÇĞİÖŞÜ0-9]{2,10}-\d{2})\s*[-–—]\s*(.+)$",
+        r"^([A-ZÇĞİÖŞÜ]{2,6}-[A-ZÇĞİÖŞÜ0-9]{2,12}-\d{2})\s*[-–—]\s*(.+)$",
         text,
         flags=re.IGNORECASE,
     )
@@ -409,7 +466,7 @@ def split_competency_value(value):
         return m.group(2).strip(), m.group(1).strip().upper()
 
     m2 = re.match(
-        r"^([A-ZÇĞİÖŞÜ]{2,6}-[A-ZÇĞİÖŞÜ0-9]{2,10}-\d{2})$",
+        r"^([A-ZÇĞİÖŞÜ]{2,6}-[A-ZÇĞİÖŞÜ0-9]{2,12}-\d{2})$",
         text,
         flags=re.IGNORECASE,
     )
@@ -462,14 +519,17 @@ def build_competency_map(df):
 
             if comp_name:
                 parsed_name, parsed_code = split_competency_value(comp_name)
+
                 if parsed_code:
                     comp_name = parsed_name
                     comp_code = parsed_code
 
             if comp_code:
                 parsed_name, parsed_code = split_competency_value(comp_code)
+
                 if parsed_code:
                     comp_code = parsed_code
+
                     if parsed_name and not comp_name:
                         comp_name = parsed_name
 
@@ -708,11 +768,13 @@ def build_quality_reports():
     master_missing = pd.DataFrame(master_missing_rows)
 
     duplicate_org = pd.DataFrame()
+
     if not org_duplicate_uids.empty:
         duplicate_org = org_duplicate_uids[[uid_col, unit_col, position_col]].copy()
         duplicate_org.columns = ["UID", "Ana Birim / Kurum", "Pozisyon / Birim Adı"]
 
     duplicate_comp = pd.DataFrame()
+
     if not comp_duplicate_uids_df.empty:
         duplicate_comp = comp_duplicate_uids_df[[comp_uid_col]].copy()
         duplicate_comp.columns = ["UID"]
@@ -737,6 +799,7 @@ def quality_reports_to_excel(reports):
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for sheet_name, df in reports.items():
             safe_name = sheet_name[:31]
+
             if df is None or df.empty:
                 pd.DataFrame({"Sonuç": ["Kayıt yok"]}).to_excel(
                     writer,
@@ -785,6 +848,7 @@ def is_main_unit_row(row):
 def get_group_code(row):
     if baglilik_col and baglilik_col in row:
         code = clean_value(row.get(baglilik_col, ""))
+
         if code:
             return code
 
@@ -813,8 +877,10 @@ ordered_groups += [g for g in all_groups if g not in ordered_groups]
 def group_title(group_code):
     if str(group_code).startswith("BY"):
         return "Bakan Yardımcısı"
+
     if group_code == "BAK":
         return "Bağlı Birimler"
+
     return str(group_code)
 
 
@@ -846,6 +912,7 @@ def get_rows_for_unit(unit_uid, unit_name):
 
     if rows.empty and unit_uid:
         prefix = "-".join(unit_uid.split("-")[:3])
+
         rows = org_df[
             org_df[uid_col].astype(str).str.startswith(prefix, na=False)
         ].copy()
