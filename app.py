@@ -91,6 +91,14 @@ def find_col(df, candidates, exact=False, forbidden=None):
     return None
 
 
+def has_any(text, phrases):
+    return any(normalize_text(p) in text for p in phrases)
+
+
+def make_competencies(items):
+    return [{"code": code, "name": name} for code, name in items]
+
+
 # =========================================================
 # EXCEL OKUMA
 # =========================================================
@@ -654,6 +662,7 @@ def has_generic_repeated_set(comps):
 
     generic_sets = [
         {"KY-HRK-06", "SP-REG-01", "OF-SUR-04", "DA-DAT-05", "SP-PAY-01"},
+        {"SP-POL-01", "SP-POL-02", "KY-HRK-08", "SP-PAY-05", "DA-DAT-01"},
     ]
 
     for gs in generic_sets:
@@ -668,12 +677,20 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
     uid_text = clean_value(uid).upper()
     generic = has_generic_repeated_set(excel_competencies)
 
-    def ret(items):
-        return [{"code": code, "name": name} for code, name in items]
-
-    # Hukuk / müşavirlik
-    if "hukuk" in text or "musavir" in text or "müşavir" in text:
-        return ret([
+    # 1. Hukuk
+    if has_any(text, [
+        "hukuk hizmetleri",
+        "hukuk daire",
+        "hukuk musavirligi",
+        "hukuk müşavirliği",
+        "hukuk musavir",
+        "hukuk müşavir",
+        "dava",
+        "icra",
+        "mevzuat hazirlama",
+        "mevzuat hazırlama",
+    ]):
+        return make_competencies([
             ("KY-HUK-01", "İdare Hukuku Okuryazarlığı"),
             ("KY-HUK-03", "Hukuki Risk Analizi"),
             ("KY-HUK-05", "Sözleşme Hukuku"),
@@ -681,18 +698,75 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("DB-ETK-03", "Tarafsızlık"),
         ])
 
-    # Bilgi işlem / teknoloji / yazılım / sistem
-    if (
-        "bilgi islem" in text
-        or "bilgi işlem" in text
-        or "bilgi teknolojileri" in text
-        or "yazilim" in text
-        or "yazılım" in text
-        or "sistem" in text
-        or "donanim" in text
-        or "donanım" in text
-    ):
-        return ret([
+    # 2. Çalışma istatistikleri
+    if has_any(text, [
+        "calisma istatistik",
+        "çalışma istatistik",
+        "istatistikleri daire",
+        "istatistik daire",
+        "analiz ve raporlama",
+        "raporlama daire",
+    ]):
+        return make_competencies([
+            ("DA-DAT-01", "Veri Analitiği"),
+            ("DA-DAT-03", "Veri Görselleştirme"),
+            ("DA-DAT-06", "Veri Kalitesi"),
+            ("SP-POL-03", "Etki Analizi"),
+            ("DA-DAT-08", "Analitik Karar Destek"),
+        ])
+
+    # 3. Sendika / toplu iş / sosyal diyalog
+    if has_any(text, [
+        "sendika",
+        "toplu is",
+        "toplu iş",
+        "grev",
+        "lokavt",
+        "sosyal diyalog",
+        "uygulama daire baskanligi",
+        "uygulama daire başkanlığı",
+    ]):
+        return make_competencies([
+            ("KY-HRK-08", "Sendika ve Çalışma İlişkileri"),
+            ("SP-PAY-05", "Sosyal Diyalog"),
+            ("SP-POL-02", "Politika Analizi"),
+            ("KY-HUK-01", "İdare Hukuku Okuryazarlığı"),
+            ("DB-SOS-05", "İşbirliği"),
+        ])
+
+    # 4. Çalışma mevzuatı / çalışma politikası
+    if has_any(text, [
+        "calisma mevzuat",
+        "çalışma mevzuat",
+        "calisma politika",
+        "çalışma politika",
+        "istihdam politik",
+        "calisma genel mudurlugu",
+        "çalışma genel müdürlüğü",
+    ]):
+        return make_competencies([
+            ("SP-POL-01", "Politika Geliştirme"),
+            ("SP-POL-02", "Politika Analizi"),
+            ("SP-REG-02", "Mevzuat Analizi"),
+            ("SP-PAY-05", "Sosyal Diyalog"),
+            ("DA-DAT-01", "Veri Analitiği"),
+        ])
+
+    # 5. Bilgi teknolojileri / yazılım / sistem
+    if has_any(text, [
+        "bilgi teknolojileri",
+        "bilgi islem",
+        "bilgi işlem",
+        "yazilim",
+        "yazılım",
+        "sistem gelistirme",
+        "sistem geliştirme",
+        "altyapi",
+        "altyapı",
+        "proje yonetimi daire",
+        "proje yönetimi daire",
+    ]):
+        return make_competencies([
             ("DA-SYS-01", "Bilgi Sistemleri Yönetimi"),
             ("DA-SYS-03", "Yazılım Geliştirme Yönetimi"),
             ("DA-SBR-01", "Siber Güvenlik Yönetimi"),
@@ -700,19 +774,17 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("OF-PRJ-01", "Proje Yönetimi"),
         ])
 
-    # Veri / raporlama / istatistik
-    if "veri" in text or "raporlama" in text or "istatistik" in text:
-        return ret([
-            ("DA-DAT-01", "Veri Analitiği"),
-            ("DA-DAT-03", "Veri Görselleştirme"),
-            ("DA-DAT-05", "Veri Yönetişimi"),
-            ("DA-DAT-06", "Veri Kalitesi"),
-            ("DA-DAT-08", "Analitik Karar Destek"),
-        ])
-
-    # Siber / bilgi güvenliği / koruma
-    if "siber" in text or "bilgi guvenligi" in text or "bilgi güvenliği" in text:
-        return ret([
+    # 6. Bilgi güvenliği / siber
+    if has_any(text, [
+        "bilgi guvenligi",
+        "bilgi güvenliği",
+        "siber",
+        "guvenlik politikasi",
+        "güvenlik politikası",
+        "erisim yetkisi",
+        "erişim yetkisi",
+    ]):
+        return make_competencies([
             ("DA-SBR-01", "Siber Güvenlik Yönetimi"),
             ("DA-SBR-02", "Bilgi Güvenliği Politikası"),
             ("DA-SBR-04", "Erişim Yetkisi Yönetimi"),
@@ -720,9 +792,35 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("DB-ETK-05", "Gizlilik Bilinci"),
         ])
 
-    # Strateji / performans / kalite
-    if "strateji" in text or "performans" in text or "kalite" in text:
-        return ret([
+    # 7. Veri / istatistik / dashboard
+    if has_any(text, [
+        "veri analitigi",
+        "veri analitiği",
+        "veri yonetimi",
+        "veri yönetimi",
+        "veri ambar",
+        "dashboard",
+        "raporlama sistemi",
+    ]):
+        return make_competencies([
+            ("DA-DAT-01", "Veri Analitiği"),
+            ("DA-DAT-03", "Veri Görselleştirme"),
+            ("DA-DAT-05", "Veri Yönetişimi"),
+            ("DA-DAT-06", "Veri Kalitesi"),
+            ("DA-DAT-08", "Analitik Karar Destek"),
+        ])
+
+    # 8. Strateji / performans / kalite
+    if has_any(text, [
+        "strateji gelistirme",
+        "strateji geliştirme",
+        "performans ve kalite",
+        "stratejik plan",
+        "performans program",
+        "kalite yonetimi",
+        "kalite yönetimi",
+    ]):
+        return make_competencies([
             ("SP-PLN-01", "Stratejik Planlama"),
             ("LY-PRF-02", "SBG Yönetimi"),
             ("KY-FIN-03", "Performans Bazlı Bütçe"),
@@ -730,17 +828,18 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("DA-DAT-03", "Veri Görselleştirme"),
         ])
 
-    # Bütçe / muhasebe / mali / iç kontrol / tahakkuk
-    if (
-        "butce" in text
-        or "bütçe" in text
-        or "muhasebe" in text
-        or "mali" in text
-        or "ic kontrol" in text
-        or "iç kontrol" in text
-        or "tahakkuk" in text
-    ):
-        return ret([
+    # 9. Bütçe / mali / muhasebe / iç kontrol
+    if has_any(text, [
+        "butce",
+        "bütçe",
+        "muhasebe",
+        "mali hizmet",
+        "mali analiz",
+        "ic kontrol",
+        "iç kontrol",
+        "tahakkuk",
+    ]):
+        return make_competencies([
             ("KY-FIN-01", "Bütçe Yönetimi"),
             ("KY-FIN-03", "Performans Bazlı Bütçe"),
             ("KY-FIN-04", "Mali Analiz"),
@@ -748,9 +847,18 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("OF-DEN-02", "Risk Bazlı Denetim"),
         ])
 
-    # Denetim / teftiş / rehberlik
-    if "denetim" in text or "teftis" in text or "teftiş" in text or "rehberlik" in text:
-        return ret([
+    # 10. Denetim / teftiş / rehberlik
+    if has_any(text, [
+        "ic denetim",
+        "iç denetim",
+        "rehberlik ve teftis",
+        "rehberlik ve teftiş",
+        "teftis baskanligi",
+        "teftiş başkanlığı",
+        "grup baskanligi",
+        "grup başkanlığı",
+    ]):
+        return make_competencies([
             ("OF-DEN-02", "Risk Bazlı Denetim"),
             ("OF-DEN-03", "Bulgulama"),
             ("OF-DEN-08", "Denetim Raporlama"),
@@ -758,20 +866,19 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("DB-ETK-03", "Tarafsızlık"),
         ])
 
-    # Personel / insan kaynakları / atama / disiplin / özlük
-    if (
-        "personel" in text
-        or "insan kaynaklari" in text
-        or "insan kaynakları" in text
-        or "atama" in text
-        or "kadro" in text
-        or "disiplin" in text
-        or "ozluk" in text
-        or "özlük" in text
-        or "emeklilik islemleri" in text
-        or "emeklilik işlemleri" in text
-    ):
-        return ret([
+    # 11. Personel / İK / atama / disiplin
+    if has_any(text, [
+        "personel dairesi",
+        "personel sube",
+        "personel şube",
+        "atama ve kadro",
+        "disiplin",
+        "ozluk",
+        "özlük",
+        "insan kaynaklari",
+        "insan kaynakları",
+    ]):
+        return make_competencies([
             ("KY-HRK-01", "Kamu Personel Rejimi"),
             ("KY-HRK-02", "Atama ve Kadro Yönetimi"),
             ("KY-HRK-06", "Eğitim ve Gelişim"),
@@ -779,9 +886,18 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("DB-ETK-03", "Tarafsızlık"),
         ])
 
-    # Eğitim şubeleri
-    if "egitim" in text or "eğitim" in text:
-        return ret([
+    # 12. Eğitim birimleri
+    if has_any(text, [
+        "egitim ve sinav",
+        "eğitim ve sınav",
+        "egitim sube",
+        "eğitim şube",
+        "egitim merkezi",
+        "eğitim merkezi",
+        "hizmet ici egitim",
+        "hizmet içi eğitim",
+    ]):
+        return make_competencies([
             ("KY-HRK-06", "Eğitim ve Gelişim"),
             ("OF-SUR-04", "Standart Operasyon Prosedürü"),
             ("DB-COG-06", "Öğrenme Çevikliği"),
@@ -789,25 +905,24 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("DA-DAT-05", "Veri Kalitesi"),
         ])
 
-    # İhale / satın alma / destek / teknik / emlak / taşınır
-    if (
-        "ihale" in text
-        or "satinalma" in text
-        or "satın alma" in text
-        or "destek" in text
-        or "tasınır" in text
-        or "taşınır" in text
-        or "emlak" in text
-        or "teknik" in text
-        or "ulastirma" in text
-        or "ulaştırma" in text
-        or "arac" in text
-        or "araç" in text
-        or "evrak" in text
-        or "arsiv" in text
-        or "arşiv" in text
-    ):
-        return ret([
+    # 13. İhale / satın alma / destek / teknik
+    if has_any(text, [
+        "ihale",
+        "satinalma",
+        "satın alma",
+        "destek hizmetleri",
+        "tasınır",
+        "taşınır",
+        "emlak",
+        "teknik hizmet",
+        "ulastirma",
+        "ulaştırma",
+        "arac ve gerec",
+        "araç ve gereç",
+        "evrak ve arsiv",
+        "evrak ve arşiv",
+    ]):
+        return make_competencies([
             ("OF-IHL-01", "İhale Yönetimi"),
             ("OF-IHL-02", "Satın Alma Planlama"),
             ("OF-IHL-04", "Sözleşme Yönetimi"),
@@ -815,20 +930,21 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("OF-SUR-01", "Süreç Yönetimi"),
         ])
 
-    # Dış ilişkiler / AB / uluslararası / yurtdışı
-    if (
-        "uluslararasi" in text
-        or "uluslararası" in text
-        or "dis iliskiler" in text
-        or "dış ilişkiler" in text
-        or "avrupa birligi" in text
-        or "avrupa birliği" in text
-        or "yurtdisi" in text
-        or "yurtdışı" in text
-        or "anlasmalar" in text
-        or "anlaşmalar" in text
-    ):
-        return ret([
+    # 14. Dış ilişkiler / AB / uluslararası
+    if has_any(text, [
+        "dis iliskiler",
+        "dış ilişkiler",
+        "avrupa birligi",
+        "avrupa birliği",
+        "uluslararasi",
+        "uluslararası",
+        "yurtdisi",
+        "yurtdışı",
+        "anlasmalar",
+        "anlaşmalar",
+        "protokol",
+    ]):
+        return make_competencies([
             ("KY-INT-01", "AB Uyum Yönetimi"),
             ("KY-INT-02", "Uluslararası Anlaşmalar"),
             ("KY-INT-03", "Uluslararası Kuruluş İlişkileri"),
@@ -836,19 +952,19 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("SP-PAY-06", "Uluslararası Koordinasyon"),
         ])
 
-    # İş sağlığı ve güvenliği
-    if (
-        "is sagligi" in text
-        or "iş sağlığı" in text
-        or "isg" in text
-        or "isggm" in text
-        or "piyasa gozetim" in text
-        or "piyasa gözetim" in text
-        or "sektorel risk" in text
-        or "sektörel risk" in text
-        or "yetkilendirme" in text
-    ):
-        return ret([
+    # 15. İş sağlığı ve güvenliği
+    if has_any(text, [
+        "is sagligi ve guvenligi",
+        "iş sağlığı ve güvenliği",
+        "isg hizmetleri",
+        "isggm",
+        "piyasa gozetim",
+        "piyasa gözetim",
+        "sektorel risk",
+        "sektörel risk",
+        "yetkilendirme daire",
+    ]):
+        return make_competencies([
             ("KY-ISG-01", "İSG Mevzuatı"),
             ("KY-ISG-02", "Sektörel Risk Analizi"),
             ("KY-ISG-03", "Piyasa Gözetim ve Denetim"),
@@ -856,9 +972,13 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("SP-REG-01", "Regülasyon Tasarımı"),
         ])
 
-    # MYK - Sınav ve Belgelendirme
-    if "sinav" in text or "sınav" in text or "belgelendirme" in text:
-        return ret([
+    # 16. MYK - sınav ve belgelendirme
+    if has_any(text, [
+        "sinav ve belgelendirme",
+        "sınav ve belgelendirme",
+        "belgelendirme daire",
+    ]):
+        return make_competencies([
             ("OF-SUR-04", "Standart Operasyon Prosedürü"),
             ("DA-DAT-05", "Veri Kalitesi"),
             ("SP-REG-01", "Regülasyon Tasarımı"),
@@ -866,9 +986,12 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("DB-ETK-03", "Tarafsızlık"),
         ])
 
-    # MYK - Ulusal Yeterlilik
-    if "ulusal yeterlilik" in text:
-        return ret([
+    # 17. MYK - ulusal yeterlilik
+    if has_any(text, [
+        "ulusal yeterlilik",
+        "yeterlilik daire",
+    ]):
+        return make_competencies([
             ("SP-REG-01", "Regülasyon Tasarımı"),
             ("SP-REG-02", "Mevzuat Analizi"),
             ("OF-SUR-04", "Standart Operasyon Prosedürü"),
@@ -876,9 +999,14 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("SP-PAY-01", "Paydaş Yönetimi"),
         ])
 
-    # MYK - Sektör Komiteleri
-    if "sektor komiteleri" in text or "sektör komiteleri" in text:
-        return ret([
+    # 18. MYK - sektör komiteleri
+    if has_any(text, [
+        "sektor komiteleri",
+        "sektör komiteleri",
+        "sektor komitesi",
+        "sektör komitesi",
+    ]):
+        return make_competencies([
             ("SP-PAY-01", "Paydaş Yönetimi"),
             ("SP-PAY-05", "Sosyal Diyalog"),
             ("SP-REG-01", "Regülasyon Tasarımı"),
@@ -886,19 +1014,16 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("DB-SOS-05", "İşbirliği"),
         ])
 
-    # MYK - genel yeterlilik / standart
-    if "yeterlilik" in text or "standart" in text:
-        return ret([
-            ("SP-REG-01", "Regülasyon Tasarımı"),
-            ("SP-REG-02", "Mevzuat Analizi"),
-            ("OF-SUR-04", "Standart Operasyon Prosedürü"),
-            ("DA-DAT-05", "Veri Kalitesi"),
-            ("SP-PAY-01", "Paydaş Yönetimi"),
-        ])
-
-    # Basın / halkla ilişkiler
-    if "basin" in text or "basın" in text or "halkla iliskiler" in text or "halkla ilişkiler" in text:
-        return ret([
+    # 19. Basın / halkla ilişkiler
+    if has_any(text, [
+        "basin ve halkla iliskiler",
+        "basın ve halkla ilişkiler",
+        "basin musavirligi",
+        "basın müşavirliği",
+        "halkla iliskiler",
+        "halkla ilişkiler",
+    ]):
+        return make_competencies([
             ("SP-PAY-04", "Kamu İletişimi"),
             ("SP-PAY-07", "Kriz İletişimi"),
             ("SP-PAY-08", "İtibar Yönetimi"),
@@ -906,17 +1031,18 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("LY-KAR-06", "Politik Duyarlılık"),
         ])
 
-    # Sosyal güvenlik / SGK
-    if (
-        "sosyal guvenlik" in text
-        or "sosyal güvenlik" in text
-        or "emeklilik hizmetleri" in text
-        or "genel saglik" in text
-        or "genel sağlık" in text
-        or "sigorta prim" in text
-        or "sgk" in uid_text
-    ):
-        return ret([
+    # 20. Sosyal güvenlik / SGK
+    if has_any(text, [
+        "sosyal guvenlik kurumu",
+        "sosyal güvenlik kurumu",
+        "emeklilik hizmetleri",
+        "genel saglik sigortasi",
+        "genel sağlık sigortası",
+        "sigorta prim",
+        "aktüerya",
+        "aktuerya",
+    ]) or "SGK" in uid_text:
+        return make_competencies([
             ("KY-SGK-01", "Sosyal Güvenlik Sistemi"),
             ("KY-SGK-02", "Aktüeryal Analiz"),
             ("KY-FIN-04", "Mali Analiz"),
@@ -924,19 +1050,21 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("OF-DEN-02", "Risk Bazlı Denetim"),
         ])
 
-    # İŞKUR / istihdam
-    if (
-        "iskur" in text
-        or "işkur" in text
-        or "isgucu" in text
-        or "işgücü" in text
-        or "istihdam" in text
-        or "issizlik" in text
-        or "işsizlik" in text
-        or "meslek danisman" in text
-        or "meslek danışman" in text
-    ):
-        return ret([
+    # 21. İŞKUR / istihdam
+    if has_any(text, [
+        "turkiye is kurumu",
+        "türkiye iş kurumu",
+        "iskur",
+        "işkur",
+        "aktif isgucu",
+        "aktif işgücü",
+        "is ve meslek danismanligi",
+        "iş ve meslek danışmanlığı",
+        "issizlik sigortasi",
+        "işsizlik sigortası",
+        "istihdam hizmetleri",
+    ]):
+        return make_competencies([
             ("SP-POL-01", "Politika Geliştirme"),
             ("KY-HRK-05", "Yetenek Yönetimi"),
             ("OF-HIZ-01", "Hizmet Tasarımı"),
@@ -944,26 +1072,22 @@ def override_competencies_by_position(position_name, uid, excel_competencies):
             ("SP-PAY-05", "Sosyal Diyalog"),
         ])
 
-    # Çalışma Genel Müdürlüğü alanları
-    if (
-        "sendika" in text
-        or "toplu is" in text
-        or "toplu iş" in text
-        or "calisma" in text
-        or "çalışma" in text
-        or "istihdam politik" in text
-    ):
-        return ret([
-            ("SP-POL-01", "Politika Geliştirme"),
-            ("SP-POL-02", "Politika Analizi"),
-            ("KY-HRK-08", "Sendika ve Çalışma İlişkileri"),
-            ("SP-PAY-05", "Sosyal Diyalog"),
-            ("DA-DAT-01", "Veri Analitiği"),
+    # 22. Özel kalem
+    if has_any(text, [
+        "ozel kalem",
+        "özel kalem",
+    ]):
+        return make_competencies([
+            ("SP-PAY-02", "Kurumsal Koordinasyon"),
+            ("LY-KAR-01", "Karar Alma"),
+            ("OF-SUR-07", "İş Sürekliliği"),
+            ("DB-SOS-07", "Dinleme"),
+            ("DB-ETK-05", "Gizlilik Bilinci"),
         ])
 
-    # Genel/kopya set varsa ve pozisyon hiçbir kategoriye girmediyse aynısını basma
+    # 23. Genel/kopya set varsa aynısını göstermesin
     if generic:
-        return ret([
+        return make_competencies([
             ("LY-STR-01", "Stratejik Liderlik"),
             ("SP-PLN-01", "Stratejik Planlama"),
             ("OF-SUR-01", "Süreç Yönetimi"),
