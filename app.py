@@ -128,7 +128,8 @@ def find_excel_file():
     return files[0]
 
 
-def read_sheet_best_header(path, sheet_name):
+@st.cache_data(show_spinner=False)
+def read_sheet_best_header(path_str, sheet_name):
     best_df = None
     best_score = -999
     best_header = None
@@ -136,7 +137,7 @@ def read_sheet_best_header(path, sheet_name):
     for header_row in range(0, 15):
         try:
             df = pd.read_excel(
-                path,
+                path_str,
                 sheet_name=sheet_name,
                 header=header_row,
                 engine="openpyxl"
@@ -185,12 +186,19 @@ def read_sheet_best_header(path, sheet_name):
     return best_df, best_header
 
 
-def get_exact_sheet(path, target_sheet, required=True):
-    xls = pd.ExcelFile(path, engine="openpyxl")
+@st.cache_data(show_spinner=False)
+def get_excel_sheet_names(path_str):
+    xls = pd.ExcelFile(path_str, engine="openpyxl")
+    return xls.sheet_names
 
-    for sheet_name in xls.sheet_names:
+
+def get_exact_sheet(path, target_sheet, required=True):
+    path_str = str(path)
+    sheet_names = get_excel_sheet_names(path_str)
+
+    for sheet_name in sheet_names:
         if normalize_text(sheet_name) == normalize_text(target_sheet):
-            df, header = read_sheet_best_header(path, sheet_name)
+            df, header = read_sheet_best_header(path_str, sheet_name)
 
             if df is None:
                 st.error(f"'{target_sheet}' sayfası okunamadı.")
@@ -200,7 +208,7 @@ def get_exact_sheet(path, target_sheet, required=True):
 
     if required:
         st.error(f"Excel içinde '{target_sheet}' sayfası bulunamadı.")
-        st.write("Bulunan sayfalar:", xls.sheet_names)
+        st.write("Bulunan sayfalar:", sheet_names)
         st.stop()
 
     return None, pd.DataFrame(), None
@@ -276,38 +284,55 @@ if uid_col is None or unit_col is None or position_col is None:
 # ORGANİZASYON VERİSİ
 # =========================================================
 
-org_df = org_raw_df.copy()
-org_df["_excel_order"] = range(len(org_df))
+@st.cache_data(show_spinner=False)
+def prepare_org_df(org_raw_df, uid_col, unit_col, position_col, baglilik_col, level_col, position_type_col, main_code_col):
+    org_df = org_raw_df.copy()
+    org_df["_excel_order"] = range(len(org_df))
 
-for col in [
+    for col in [
+        uid_col,
+        baglilik_col,
+        unit_col,
+        level_col,
+        position_type_col,
+        position_col,
+        main_code_col
+    ]:
+        if col and col in org_df.columns:
+            org_df[col] = org_df[col].apply(clean_value)
+
+    org_df[uid_col] = org_df[uid_col].apply(normalize_uid)
+
+    org_df = org_df[org_df[uid_col].apply(is_position_uid)].copy()
+
+    org_df = org_df[
+        (org_df[uid_col] != "")
+        & (org_df[unit_col] != "")
+        & (org_df[position_col] != "")
+    ].copy()
+
+    org_df = org_df.drop_duplicates(subset=[uid_col], keep="first").reset_index(drop=True)
+
+    return org_df
+
+
+org_df = prepare_org_df(
+    org_raw_df,
     uid_col,
-    baglilik_col,
     unit_col,
+    position_col,
+    baglilik_col,
     level_col,
     position_type_col,
-    position_col,
     main_code_col
-]:
-    if col and col in org_df.columns:
-        org_df[col] = org_df[col].apply(clean_value)
-
-org_df[uid_col] = org_df[uid_col].apply(normalize_uid)
-
-org_df = org_df[org_df[uid_col].apply(is_position_uid)].copy()
-
-org_df = org_df[
-    (org_df[uid_col] != "")
-    & (org_df[unit_col] != "")
-    & (org_df[position_col] != "")
-].copy()
-
-org_df = org_df.drop_duplicates(subset=[uid_col], keep="first").reset_index(drop=True)
+)
 
 
 # =========================================================
 # MASTER KOD -> AD
 # =========================================================
 
+@st.cache_data(show_spinner=False)
 def build_master_lookup(master_df):
     lookup = {}
 
@@ -493,7 +518,8 @@ if not comp_cols:
 # YETKİNLİK MAP
 # =========================================================
 
-def build_competency_map(df):
+@st.cache_data(show_spinner=False)
+def build_competency_map(df, comp_uid_col, comp_cols, master_lookup):
     comp_map = {}
 
     temp = df.copy()
@@ -561,7 +587,12 @@ def build_competency_map(df):
     return comp_map
 
 
-competency_map = build_competency_map(comp_raw_df)
+competency_map = build_competency_map(
+    comp_raw_df,
+    comp_uid_col,
+    comp_cols,
+    master_lookup
+)
 
 
 def get_competencies_for_uid(uid):
